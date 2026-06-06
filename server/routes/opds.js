@@ -28,14 +28,19 @@ router.get('/cover', (req, res) => {
 
   fetch(coverUrl, { headers, signal: AbortSignal.timeout(8000) })
     .then(async r => {
-      if (!r.ok) return res.status(r.status).end();
-      const ct  = r.headers.get('content-type') || 'image/jpeg';
+      if (!r.ok) return res.status(404).end();
+      const ct = r.headers.get('content-type') || '';
+      // Some servers return an HTML auth-redirect page with 200 OK — reject non-image responses
+      // so the browser reliably fires onerror and shows the placeholder instead of a blank box.
+      if (!ct.startsWith('image/') && !ct.startsWith('application/octet-stream') && ct !== '') {
+        return res.status(404).end();
+      }
       const buf = await r.arrayBuffer();
-      res.set('Content-Type', ct);
+      res.set('Content-Type', ct || 'image/jpeg');
       res.set('Cache-Control', 'public, max-age=3600');
       res.send(Buffer.from(buf));
     })
-    .catch(() => res.status(502).end());
+    .catch(() => res.status(404).end());
 });
 
 // ── GET /api/opds/sync-sse — stream sync progress via SSE ─────────────────────
@@ -289,7 +294,8 @@ function normaliseAtomFeed(feed) {
     );
     const coverLink = links.find(l =>
       (l['@_rel'] || '').includes('thumbnail') ||
-      (l['@_rel'] || '').includes('image')
+      (l['@_rel'] || '').includes('image') ||
+      (l['@_rel'] || '').toLowerCase() === 'cover'
     );
     const titleVal   = e.title?.['#text'] || e.title || '';
     const authorVal   = e.author?.[0]?.name?.['#text'] || e.author?.[0]?.name || '';

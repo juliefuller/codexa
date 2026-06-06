@@ -292,6 +292,24 @@
               <button class="theme-btn theme-midnight"  data-theme="midnight"  data-i18n="reader.theme_midnight">Polnoč</button>
               <button class="theme-btn theme-nord"      data-theme="nord"      data-i18n="reader.theme_nord">Nord</button>
             </div>
+            <div class="theme-buttons-row">
+              <button class="theme-btn theme-custom" data-theme="custom" data-i18n="reader.theme_custom">Po meri</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Custom color pickers (shown only when Custom theme is active) -->
+        <div class="setting-row" id="custom-color-pickers" style="display:none">
+          <div class="setting-label" data-i18n="reader.custom_colors">Custom colors</div>
+          <div class="custom-color-pickers">
+            <label class="custom-color-picker">
+              <span data-i18n="reader.custom_bg">Background</span>
+              <input type="color" id="custom-bg-color" value="#000000" />
+            </label>
+            <label class="custom-color-picker">
+              <span data-i18n="reader.custom_text">Text</span>
+              <input type="color" id="custom-text-color" value="#c8b89a" />
+            </label>
           </div>
         </div>
 

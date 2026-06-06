@@ -437,6 +437,7 @@ html, body {
 #settings-panel,
 .dict-popup {
   box-shadow: none;
+  pointer-events: none;
 }
 
 body.page-gap-shadow-on #annot-toolbar,
@@ -461,6 +462,7 @@ body.page-gap-shadow-on .dict-popup {
 #settings-panel.open,
 .dict-popup.open {
   box-shadow: var(--shadow);
+  pointer-events: auto;
 }
 
 /* ── Navigation zones ────────────────────────────────────────────────────────── */
@@ -1183,7 +1185,40 @@ input[type="range"]::-moz-range-thumb {
 .theme-btn.theme-sepiaDark { background: #c4b090; color: #2e2014; }
 .theme-btn.theme-midnight  { background: #0f172a; color: #e2e8f0; }
 .theme-btn.theme-nord      { background: #2e3440; color: #d8dee9; }
+.theme-btn.theme-custom    { background: #000000; color: #c8b89a; }
 .spread-btn { background: var(--color-surface2); color: var(--color-text); }
+
+/* Custom color pickers */
+.custom-color-pickers {
+  display: flex;
+  gap: .6rem;
+  margin-top: .35rem;
+  width: 100%;
+}
+.custom-color-picker {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .5rem;
+  flex: 1;
+  padding: .4rem .65rem;
+  background: var(--color-surface2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  font-size: .8rem;
+  color: var(--color-text);
+  cursor: pointer;
+}
+.custom-color-picker input[type="color"] {
+  width: 2rem;
+  height: 1.6rem;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  cursor: pointer;
+  padding: 1px 2px;
+  background: none;
+  flex-shrink: 0;
+}
 
 /* E-ink reader: spread button high-contrast */
 [data-reader-eink] .spread-btn {
@@ -1229,6 +1264,16 @@ input[type="range"]::-moz-range-thumb {
 [data-reader-eink] .dict-order-btn:hover:not(:disabled) {
   background: #000;
   color: #fff;
+}
+
+/* E-ink reader: annotation toolbar action buttons */
+[data-reader-eink] #annot-toolbar .btn-icon-sm {
+  background: #fff;
+  color: #000;
+  border: 1px solid #000;
+}
+[data-reader-eink] #annot-toolbar .btn-icon-sm:hover {
+  background: #e8e8e8;
 }
 
 /* ── Status bar overlays ─────────────────────────────────────────────────────── */

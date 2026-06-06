@@ -44,6 +44,37 @@ const THEMES = {
   nord:      { bg: '#2e3440', text: '#d8dee9', link: '#88c0d0' },
 };
 
+function hexLuminance(hex) {
+  const r = parseInt(hex.slice(1,3),16)/255, g = parseInt(hex.slice(3,5),16)/255, b = parseInt(hex.slice(5,7),16)/255;
+  const lin = c => c <= 0.03928 ? c/12.92 : Math.pow((c+0.055)/1.055, 2.4);
+  return 0.2126*lin(r) + 0.7152*lin(g) + 0.0722*lin(b);
+}
+function mixHex(h1, h2, t) {
+  const p = c => parseInt(c,16);
+  const r = Math.round(p(h1.slice(1,3)) + (p(h2.slice(1,3))-p(h1.slice(1,3)))*t);
+  const g = Math.round(p(h1.slice(3,5)) + (p(h2.slice(3,5))-p(h1.slice(3,5)))*t);
+  const b = Math.round(p(h1.slice(5,7)) + (p(h2.slice(5,7))-p(h1.slice(5,7)))*t);
+  return '#'+r.toString(16).padStart(2,'0')+g.toString(16).padStart(2,'0')+b.toString(16).padStart(2,'0');
+}
+function deriveCustomPalette(bg, text) {
+  const isDark = hexLuminance(bg) < 0.4;
+  const shadowA = isDark ? 0.4 : 0.1;
+  return {
+    theme: { bg, text, link: text },
+    ui: {
+      bg,
+      surface:    mixHex(bg, text, 0.06),
+      surface2:   mixHex(bg, text, 0.12),
+      border:     hexToRgba(text, isDark ? 0.12 : 0.15),
+      text,
+      textMuted:  mixHex(text, bg, 0.4),
+      accent:     text,
+      accentDark: mixHex(text, bg, 0.2),
+      shadow:     `0 2px 8px rgba(0,0,0,${shadowA}), 0 4px 24px rgba(0,0,0,${(shadowA*1.25).toFixed(2)}), 0 8px 40px rgba(0,0,0,${(shadowA*0.7).toFixed(2)})`,
+    },
+  };
+}
+
 /** Full shell-UI palette derived from each reader theme — applied to all panels/sidebars. */
 const THEME_UI = {
   light: {
@@ -187,6 +218,8 @@ const DEFAULT_PREFS = {
   spread:         'auto',       // two-page default
   overrideStyles: true,
   theme:          'sepia',
+  customBg:       '#000000',
+  customText:     '#c8b89a',
   autoHideHeader: true,
   keepScreenOn:   true,
   eink:           false,        // strip all colors for e-ink displays
@@ -792,7 +825,9 @@ img     { filter: grayscale(100%) !important; }
 }
 
 function buildEpubCss() {
-  const theme = THEMES[prefs.theme] || THEMES.dark;
+  const theme = prefs.theme === 'custom'
+    ? { bg: prefs.customBg || '#000000', text: prefs.customText || '#c8b89a', link: prefs.customText || '#c8b89a' }
+    : (THEMES[prefs.theme] || THEMES.dark);
   const fontOverrides = prefs.overrideStyles ? `
 body {
   font-size:     ${prefs.fontSize}px !important;
@@ -938,6 +973,8 @@ function injectIntoContents(contents) {
 }
 
 function collapseBlankParagraphs(doc) {
+  if (doc.documentElement.dataset.brBlanksCollapsed) return;
+  doc.documentElement.dataset.brBlanksCollapsed = '1';
   doc.querySelectorAll('p').forEach(p => {
     if (p.textContent.trim() === '' && !p.querySelector('img, svg, video, audio')) {
       p.dataset.brBlank = '1';
@@ -986,8 +1023,14 @@ function hexToRgba(hex, alpha) {
 }
 
 function applyUiTheme() {
-  const theme = THEMES[prefs.theme] || THEMES.dark;
-  const ui    = THEME_UI[prefs.theme] || THEME_UI.dark;
+  let theme, ui;
+  if (prefs.theme === 'custom') {
+    const c = deriveCustomPalette(prefs.customBg || '#000000', prefs.customText || '#c8b89a');
+    theme = c.theme; ui = c.ui;
+  } else {
+    theme = THEMES[prefs.theme] || THEMES.dark;
+    ui    = THEME_UI[prefs.theme] || THEME_UI.dark;
+  }
   const safeAreaFill = document.getElementById('safe-area-fill');
 
   if (prefs.eink) {
@@ -1040,8 +1083,16 @@ function applyUiTheme() {
   document.body.dataset.readerTheme = prefs.theme;
   // SVGs loaded as <img> can't use currentColor — drive icon appearance via filter.
   // Dark themes need icons inverted (dark SVG → light); light/sepia themes need none.
-  const needsIconInvert = ['dark', 'midnight', 'nord'].includes(prefs.theme);
+  const needsIconInvert = prefs.theme === 'custom'
+    ? hexLuminance(prefs.customBg || '#000000') < 0.4
+    : ['dark', 'midnight', 'nord'].includes(prefs.theme);
   document.documentElement.style.setProperty('--nav-icon-filter', needsIconInvert ? 'brightness(0) invert(1)' : 'none');
+  // Update custom theme button preview colors
+  const customBtn = document.querySelector('.theme-btn.theme-custom');
+  if (customBtn) {
+    customBtn.style.background = prefs.customBg || '#000000';
+    customBtn.style.color = prefs.customText || '#c8b89a';
+  }
 }
 
 /*
@@ -2971,6 +3022,12 @@ function syncSettingsUi() {
   if (saveOnCloseEl) saveOnCloseEl.checked = prefs.skipSaveOnClose;
   document.querySelectorAll('.theme-btn').forEach(b =>
     b.classList.toggle('active', b.dataset.theme === prefs.theme));
+  const customPickersEl = document.getElementById('custom-color-pickers');
+  if (customPickersEl) customPickersEl.style.display = prefs.theme === 'custom' ? '' : 'none';
+  const customBgEl   = document.getElementById('custom-bg-color');
+  const customTextEl = document.getElementById('custom-text-color');
+  if (customBgEl)   customBgEl.value   = prefs.customBg   || '#000000';
+  if (customTextEl) customTextEl.value = prefs.customText || '#c8b89a';
   document.querySelectorAll('.spread-btn').forEach(b =>
     b.classList.toggle('active', b.dataset.spread === prefs.spread));
   // Edge padding
@@ -3542,6 +3599,14 @@ function initSettingsUi() {
       prefs.theme = btn.dataset.theme;
       applyUiTheme(); reapplyStyles(); syncSettingsUi(); persistPrefs();
     });
+  });
+  document.getElementById('custom-bg-color')?.addEventListener('input', e => {
+    prefs.customBg = e.target.value;
+    applyUiTheme(); reapplyStyles(); persistPrefs();
+  });
+  document.getElementById('custom-text-color')?.addEventListener('input', e => {
+    prefs.customText = e.target.value;
+    applyUiTheme(); reapplyStyles(); persistPrefs();
   });
   document.querySelectorAll('.spread-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
@@ -4353,9 +4418,28 @@ async function resizeRenditionToViewer() {
     return;
   }
   const pctBeforeResize = currentPct;
+  const cfiBeforeResize = currentCfi;
+  chapPageCache    = {};
+  currentChapTotal = 0;
   rendition.resize(epubViewer.clientWidth, Math.max(200, epubViewer.clientHeight - RENDITION_BOTTOM_RESERVE));
   if (isReady && pctBeforeResize > 0 && book.locations?.length() > 0) {
     await seekToPercentage(pctBeforeResize);
+  } else if (isReady && cfiBeforeResize) {
+    try { await rendition.display(cfiBeforeResize); } catch {}
+  }
+  // After layout settles, force a status-bar refresh from the live column count.
+  // The 'relocated' events fired during resize read pre-reflow layout values;
+  // this read (after both navigation and the browser reflow complete) gets the
+  // true page total and bypasses the Math.max stale-cache guard.
+  await new Promise(r => setTimeout(r, 250));
+  const loc = rendition.currentLocation();
+  if (loc) {
+    const freshTotal = loc.start?.displayed?.total ?? 0;
+    if (freshTotal > 0) {
+      currentChapTotal = freshTotal;
+      chapPageCache[currentSpineIndex] = freshTotal;
+    }
+    updateStatusBar(loc);
   }
 }
 
@@ -4966,7 +5050,7 @@ document.addEventListener('fullscreenchange', async () => {
 // ── Init ──────────────────────────────────────────────────────────────────────
 async function init() {
   await _i18nReady;
-  console.log('[reader] v4.2026-05-15.01');
+  console.log('[reader] v4.2026-06-06.01');
   // Always inherit library e-ink setting so reader opens in e-ink when library is in e-ink mode
   if (localStorage.getItem('br_library_theme') === 'eink' ||
       (typeof window.AndroidCodexa?.isEinkMode === 'function' && window.AndroidCodexa.isEinkMode())) {

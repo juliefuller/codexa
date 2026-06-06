@@ -14,7 +14,7 @@ function ensureToastContainer() {
   return el;
 }
 
-export function showToast(message, type = 'info', duration = 3500) {
+export function showToast(message, type = 'info', duration = 2000) {
   const container = ensureToastContainer();
   const toast = document.createElement('div');
   toast.className = `toast toast-${type}`;

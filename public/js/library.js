@@ -1059,6 +1059,8 @@ export async function reloadLibrary() {
 async function deleteBook(id) {
   try {
     await apiFetch(`/books/${id}`, { method: 'DELETE' });
+    deleteDownload(id);        // remove EPUB from SW cache + IDB (fire-and-forget)
+    downloadedIds.delete(id);  // keep in-memory set in sync immediately
     toast.success(t('library.toast_book_deleted'));
     await loadBooks();
     await reloadShelves();
@@ -1116,7 +1118,7 @@ async function handleFiles(fileList) {
 // ── Init ──────────────────────────────────────────────────────────────────────
 let _initialized = false;
 
-function checkInterruptedSession() {
+async function checkInterruptedSession() {
   const SESSION_KEY = 'br_interrupted_session_v1';
   const MAX_AGE = 24 * 60 * 60 * 1000;
   let session = null;
@@ -1128,6 +1130,14 @@ function checkInterruptedSession() {
     }
   } catch { /* ignore */ }
   if (!session) return;
+
+  // Verify the book still exists before showing the restore banner
+  try {
+    await apiFetch(`/books/${session.bookId}`);
+  } catch {
+    try { localStorage.removeItem(SESSION_KEY); } catch {}
+    return;
+  }
 
   const banner = document.createElement('div');
   banner.id = 'session-restore-banner';

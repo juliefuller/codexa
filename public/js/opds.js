@@ -225,7 +225,7 @@ function renderFeed(feed) {
           ${entry.author ? `<div class="book-row-author">${escHtml(entry.author)}</div>` : ''}
         </div>
         <div class="book-row-actions">
-          ${entry.acqHref ? `<button class="btn btn-primary btn-sm btn-add">${t('opds.btn_add')}</button>` : ''}
+          ${entry.acqHref ? `<button class="btn btn-primary btn-sm btn-add" title="${escHtml(t('opds.btn_add'))}"><span class="btn-add-label">${escHtml(t('opds.btn_add'))}</span></button>` : ''}
         </div>
       </div>
       <div class="book-row-detail" hidden>
