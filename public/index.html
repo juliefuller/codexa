@@ -58,6 +58,7 @@
               <option value="title_desc" data-i18n="library.sort_title_za">Naslov Z–A</option>
               <option value="author_asc" data-i18n="library.sort_author_az">Avtor A–Z</option>
               <option value="progress_desc" data-i18n="library.sort_progress">Napredek</option>
+              <option value="opened_desc" data-i18n="library.sort_last_opened">Nazadnje odprto</option>
               <option value="series_asc" data-i18n="library.sort_series">Serija</option>
             </select>
             <button id="sort-menu-btn" class="sort-menu-btn" aria-haspopup="listbox" aria-expanded="false" aria-controls="sort-menu-list" title="Razvrsti knjige">
@@ -317,10 +318,6 @@
   <script>try { if (localStorage.getItem('sidebarCollapsed') === '1') document.getElementById('app-sidebar').classList.add('collapsed'); } catch {}</script>
 
   <script type="module" src="/js/app.js"></script>
-  <script>
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/sw.js').catch(() => {});
-    }
-  </script>
+  <script src="/js/sw-register.js"></script>
 </body>
 </html>

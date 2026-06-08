@@ -4,7 +4,9 @@ import { t, initI18n, applyTranslations, getCurrentLang } from './i18n.js';
 import ePub from './flow/index.js';
 import { isBookDownloaded, downloadBook, getBookMeta, saveBookMeta } from './offline.js';
 
+const READER_BUILD = 'br-v39';
 const _i18nReady = initI18n();
+console.log('[codexa] reader build', READER_BUILD);
 
 function onTap(el, handler) {
   if (!el) return;
@@ -177,6 +179,7 @@ const DEFAULT_STATUS_BAR = {
   showIcons:        {},           // { [statId]: false } to hide icon; default = show all
   bookProgressBar:  { show: false, position: 'bottom', thickness: 3 },
   chapProgressBar:  { show: false, position: 'bottom', thickness: 2 },
+  clockFormat:      '24h',   // '24h' | '12h'
 };
 
 // Stat definitions — id, icon, translated label (use function to get current lang)
@@ -194,6 +197,7 @@ function getStatusStats() {
     { id: 'bookTitle',     icon: '/images/book_title.svg',      label: t('reader.sb_book_title') },
     { id: 'bookAuthor',    icon: '/images/book_author.svg',     label: t('reader.sb_book_author') },
     { id: 'chapterTitle',  icon: '/images/chapter_title.svg',   label: t('reader.sb_chap_title') },
+    { id: 'battery',       icon: '/images/battery.svg',         label: t('reader.sb_battery') },
   ];
 }
 
@@ -232,6 +236,7 @@ const DEFAULT_PREFS = {
   lockPortrait:      false,    // lock orientation to portrait (PWA + Android app)
   skipOpenProgressCheck: false, // if true, do not restore/sync progress on open
   skipSaveOnClose: false,       // if true, do not auto-save when leaving/closing
+  saveOnHide: true,             // push progress when screen locks or app is backgrounded
   chapHeadSpacing: true,        // override book heading margins to compact spacing
   compactBlankLines: false,     // hide whitespace-only <p> elements
   disableJustify:  false,        // left-align text instead of justified
@@ -242,6 +247,10 @@ const DEFAULT_PREFS = {
   dictionaries:   [],           // enabled dict IDs in priority order; null = all disabled; empty = use all
   dictionaryOrder: [],          // all dict IDs in user's display order (including disabled ones)
   edgePadding:    { top: 0, bottom: 0, left: 0, right: 0 },   // px inset for curved screens
+  navZoneLeftPct:  20,          // % of screen width — tap/click to go back
+  navZoneRightPct: 20,          // % of screen width — tap/click to go forward
+  headerRevealZonePct: 12,      // % of screen height — tap reveals auto-hidden toolbar
+  headerButtonScalePct: 100,    // % of default responsive size (36 desktop / 44 mobile)
   statusBar:      null,         // deep-merged in loadPrefs()
 };
 
@@ -257,6 +266,7 @@ let lastKnownXPointer = null; // precise xpointer last received from KOReader/se
 let lastChapterHref = null;  // chapter-boundary save tracking
 let lastSentChapterHref = null; // last chapter for which remote progress was pushed
 let availableDicts  = null;  // cached GET /api/dictionary response
+let _batteryMgr     = null;  // BatteryManager from navigator.getBattery(), null if unsupported
 let pendingNavDirection = null; // 'next' or 'prev' tracking for chapter jump corrections
 let pendingWasChapterEnd = true;  // whether goNext() was called from the last page
 let deferredNextPending  = false; // true while a mid-repagination NEXT is deferred
@@ -287,6 +297,13 @@ let _clearHlTimer = null;
 // Reading statistics tracking
 let statsSessionId = null;            // active reading_sessions.id
 let sessionPageCount = 0;             // page navigation events in current session
+const SYNC_DEBOUNCE_MS   = 60000;    // inactivity debounce — resets on every page turn
+const SYNC_INTERVAL_MS   = 240000;   // 4-minute heartbeat — always fires regardless of activity
+let syncDebounceTimer  = null;
+let syncIntervalTimer  = null;
+let lastHideSaveTs     = 0;
+let lastSyncedCfi      = '';           // CFI at last successful remote push — used to skip duplicate syncs
+let bestKnownRemotePct = 0;            // high-water mark from all sources — kosync is never pushed below this
 
 // ── Status bar state ──────────────────────────────────────────────────────────
 let currentHref      = '';    // current spine href (updated in updateProgress)
@@ -359,9 +376,22 @@ function loadPrefs() {
     const s = localStorage.getItem('br_reader_prefs');
     const saved = s ? JSON.parse(s) : {};
     const sb = saved.statusBar || {};
+    const legacyRevealPx = typeof saved.headerRevealZone === 'number' ? saved.headerRevealZone : null;
+    const legacyBtnPx = typeof saved.headerButtonSize === 'number' ? saved.headerButtonSize : null;
+    const btnBase = window.matchMedia('(max-width: 640px)').matches ? 44 : 36;
     return {
       ...DEFAULT_PREFS,
       ...saved,
+      headerRevealZonePct: saved.headerRevealZonePct ?? (
+        legacyRevealPx != null
+          ? Math.min(40, Math.max(2, Math.round(legacyRevealPx / 8)))
+          : DEFAULT_PREFS.headerRevealZonePct
+      ),
+      headerButtonScalePct: saved.headerButtonScalePct ?? (
+        legacyBtnPx != null && legacyBtnPx > 0
+          ? Math.min(225, Math.max(75, Math.round(legacyBtnPx / btnBase * 100)))
+          : DEFAULT_PREFS.headerButtonScalePct
+      ),
       edgePadding: { ...DEFAULT_PREFS.edgePadding, ...(saved.edgePadding || {}) },
       statusBar: {
         ...DEFAULT_STATUS_BAR,
@@ -370,6 +400,7 @@ function loadPrefs() {
         showIcons:       { ...DEFAULT_STATUS_BAR.showIcons,       ...sb.showIcons },
         bookProgressBar: { ...DEFAULT_STATUS_BAR.bookProgressBar, ...sb.bookProgressBar },
         chapProgressBar: { ...DEFAULT_STATUS_BAR.chapProgressBar, ...sb.chapProgressBar },
+        clockFormat:     sb.clockFormat || DEFAULT_STATUS_BAR.clockFormat,
       },
     };
   } catch { return { ...DEFAULT_PREFS, statusBar: { ...DEFAULT_STATUS_BAR } }; }
@@ -875,7 +906,6 @@ img {
   margin-right: auto !important;
   mix-blend-mode: multiply !important;
 }
-/* Keep native selection/callout enabled so iOS long-press and selection behave naturally. */
 ${prefs.eink ? buildEinkCss(theme) : ''}
 ${prefs.paraIndent ? `p { text-indent: ${(prefs.paraIndentSize / 10).toFixed(1)}em !important; }` : 'p { text-indent: 0 !important; }'}
 ${prefs.paraSpacing > 0 ? `p { margin-bottom: ${(prefs.paraSpacing / 10).toFixed(1)}em !important; }` : ''}
@@ -1008,9 +1038,18 @@ async function releaseWakeLock() {
 }
 // Re-acquire after tab becomes visible again (wake lock is auto-released on hide)
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') acquireWakeLock();
-  if (document.visibilityState === 'hidden')  writeInterruptedSession();
+  if (document.visibilityState === 'visible') {
+    acquireWakeLock();
+  }
+  if (document.visibilityState === 'hidden') {
+    writeInterruptedSession();
+    saveOnAppHide();
+  }
 });
+// pagehide fires on cover-close, tab switch and navigation away — use beacon there too
+window.addEventListener('pagehide', saveOnAppHide);
+// freeze fires on some mobile browsers when the page is backgrounded into BFCache
+window.addEventListener('freeze',   saveOnAppHide);
 
 // ── Host page background ──────────────────────────────────────────────────────
 
@@ -1132,14 +1171,28 @@ function attachIframeDictionary(contents) {
   if (!contents?.document || !contents?.window) return;
   const doc = contents.document;
   const win = contents.window;
-  const coarsePointer = !!win.matchMedia?.('(pointer: coarse)')?.matches;
-  let pressTimer = null, pressX = 0, pressY = 0, selectionTimer = null, lastSelectionWord = '', lastSelectionTs = 0;
+  if (doc.__codexaDict) return;
+  doc.__codexaDict = true;
+  const touchReader = isTouchReader();
+  const nativeSelect = useNativeTextSelection();
+  let pressTimer = null, pressX = 0, pressY = 0;
 
-  // iOS: suppress native callout and text-selection takeover inside epub iframes.
   if (isIOS) {
-    const iosStyle = doc.createElement('style');
-    iosStyle.textContent = '* { -webkit-touch-callout: none !important; -webkit-user-select: none !important; user-select: none !important; }';
-    (doc.head || doc.documentElement).appendChild(iosStyle);
+    // iOS: custom long-press — native callout fights our toolbar.
+    const noSelStyle = doc.createElement('style');
+    noSelStyle.textContent = '* { -webkit-touch-callout: none !important; -webkit-user-select: none !important; user-select: none !important; }';
+    (doc.head || doc.documentElement).appendChild(noSelStyle);
+  } else if (nativeSelect) {
+    // Android / Vivaldi PWA: native selection handles; Google menu stays at bottom.
+    const selStyle = doc.createElement('style');
+    selStyle.textContent = `
+      html, body, p, li, span, div, td, th, blockquote {
+        -webkit-user-select: text !important;
+        user-select: text !important;
+        touch-action: auto !important;
+      }
+    `;
+    (doc.head || doc.documentElement).appendChild(selStyle);
   }
 
   function getWordAtPoint(x, y) {
@@ -1197,85 +1250,74 @@ function attachIframeDictionary(contents) {
     } catch { return null; }
   }
 
-  function triggerSelectionLookup() {
-    const sel = win.getSelection?.();
-    const raw = (sel?.toString() || '').trim();
-    if (!raw) return;
-    const word = raw.split(/\s+/)[0].replace(/^['\u2019\-]+|['\u2019\-]+$/g, '').trim();
+  function offerDictLookup(word, x, y) {
     if (!word) return;
-    const now = Date.now();
-    if (word === lastSelectionWord && now - lastSelectionTs < 900) return;
-    lastSelectionWord = word;
-    lastSelectionTs = now;
-    window.parent.postMessage({ type: 'dict-lookup', word }, '*');
+    window.parent.postMessage({ type: 'dict-offer', word, x, y }, '*');
   }
 
-  doc.addEventListener('touchstart', (e) => {
-    const t = e.touches[0];
-    pressX = t.clientX;
-    pressY = t.clientY;
-    pressTimer = setTimeout(() => {
-      pressTimer = null;
-      suppressNextTap = true;
-      const result = getWordRangeAtPoint(pressX, pressY);
-      if (!result) return;
-      const { word, range } = result;
-      win.getSelection?.()?.removeAllRanges?.();
-      let cfiRange = '';
-      if (prefs.bionicReading) {
-        // Bionic DOM shifts CFI paths — generate a clean CFI from the pre-bionic structure
-        cfiRange = cfiFromBionicRange(range, doc, contents) || '';
-      } else {
-        try { cfiRange = contents.cfiFromRange(range); } catch {}
+  // iOS only — Android uses native selection (see attachIframeAnnotation).
+  if (isIOS) {
+    doc.addEventListener('touchstart', (e) => {
+      const t = e.touches[0];
+      pressX = t.clientX;
+      pressY = t.clientY;
+      pressTimer = setTimeout(() => {
+        pressTimer = null;
+        suppressNextTap = true;
+        const result = getWordRangeAtPoint(pressX, pressY);
+        if (!result) return;
+        const { word, range } = result;
+        let cfiRange = '';
+        if (prefs.bionicReading) {
+          cfiRange = cfiFromBionicRange(range, doc, contents) || '';
+        } else {
+          try { cfiRange = contents.cfiFromRange(range); } catch {}
+        }
+        win.getSelection?.()?.removeAllRanges?.();
+        clearTimeout(_clearHlTimer); _clearHlTimer = null;
+        let ax = pressX;
+        let ay = pressY;
+        try {
+          const hl = doc.createElement('mark');
+          hl.className = 'br-press-hl';
+          range.surroundContents(hl);
+          const rect = hl.getBoundingClientRect();
+          ax = rect.left + rect.width / 2;
+          ay = rect.top;
+        } catch { /* range spans element boundary */ }
+        window.parent.postMessage({ type: 'annotation-select', cfiRange: cfiRange || '', text: word }, '*');
+        offerDictLookup(word, ax, ay);
+      }, 520);
+    }, { passive: true });
+
+    doc.addEventListener('touchmove', (e) => {
+      if (Math.abs(e.touches[0].clientX - pressX) > 24 || Math.abs(e.touches[0].clientY - pressY) > 24) {
+        clearTimeout(pressTimer); pressTimer = null;
       }
-      // Highlight the pressed word — CFI already captured, safe to modify DOM now
-      clearTimeout(_clearHlTimer); _clearHlTimer = null;
-      try {
-        const hl = doc.createElement('mark');
-        hl.className = 'br-press-hl';
-        range.surroundContents(hl);
-      } catch { /* range spans element boundary, skip visual highlight */ }
-      if (cfiRange) {
-        window.parent.postMessage({ type: 'annotation-select', cfiRange, text: word }, '*');
-      } else {
-        window.parent.postMessage({ type: 'dict-lookup', word }, '*');
-      }
-    }, 450);
-  }, { passive: true });
+    }, { passive: true });
 
-  doc.addEventListener('touchmove', (e) => {
-    if (Math.abs(e.touches[0].clientX - pressX) > 18 || Math.abs(e.touches[0].clientY - pressY) > 18) {
-      clearTimeout(pressTimer); pressTimer = null;
-    }
-  }, { passive: true });
+    doc.addEventListener('touchend', () => {
+      if (pressTimer !== null) { clearTimeout(pressTimer); pressTimer = null; }
+    }, { passive: true });
 
-  doc.addEventListener('touchend', () => {
-    if (pressTimer !== null) { clearTimeout(pressTimer); pressTimer = null; }
-  }, { passive: true });
-
-  doc.addEventListener('touchcancel', () => { clearTimeout(pressTimer); pressTimer = null; }, { passive: true });
-
-  if (coarsePointer && !isIOS) {
-    doc.addEventListener('selectionchange', () => {
-      clearTimeout(selectionTimer);
-      selectionTimer = setTimeout(triggerSelectionLookup, 120);
-    });
+    doc.addEventListener('touchcancel', () => { clearTimeout(pressTimer); pressTimer = null; }, { passive: true });
   }
 
   doc.addEventListener('contextmenu', (e) => {
+    if (nativeSelect) return; // let Android/Vivaldi handle native selection UI
     e.preventDefault();
     const sel     = win.getSelection?.();
     const selText = sel?.toString().trim();
     const word    = selText ? selText.split(/\s+/)[0] : getWordAtPoint(e.clientX, e.clientY);
-    if (word) window.parent.postMessage({ type: 'dict-lookup', word }, '*');
+    if (word) offerDictLookup(word, e.clientX, e.clientY);
   });
 
-  if (!coarsePointer) {
+  if (!touchReader) {
     doc.addEventListener('dblclick', (e) => {
       const sel = win.getSelection?.();
       const selText = sel?.toString().trim();
       const word = selText ? selText.split(/\s+/)[0] : getWordAtPoint(e.clientX, e.clientY);
-      if (word) window.parent.postMessage({ type: 'dict-lookup', word }, '*');
+      if (word) offerDictLookup(word, e.clientX, e.clientY);
     });
   }
 }
@@ -1452,23 +1494,50 @@ function closeFootnotePopup() {
 function attachIframeAnnotation(contents) {
   if (!contents?.document) return;
   const doc = contents.document;
+  const win = contents.window;
+  if (doc.__codexaAnnot) return;
+  doc.__codexaAnnot = true;
+  // iOS uses long-press postMessage from attachIframeDictionary instead.
+  if (isIOS) return;
+
+  let _selChangeTimer = null;
   function onSelectionEnd(e) {
-    if (e?.button !== undefined && e.button !== 0) return; // ignore right/middle clicks
-    const sel = doc.getSelection();
+    if (e?.button !== undefined && e.button !== 0) return;
+    const sel = win.getSelection?.() || doc.getSelection();
     if (!sel || sel.isCollapsed || !sel.rangeCount) return;
     const text = sel.toString().trim();
-    if (text.length < 2) return;
-    let cfiRange;
+    if (!text) return;
+    let cfiRange = '';
     if (prefs.bionicReading) {
-      cfiRange = cfiFromBionicRange(sel.getRangeAt(0), doc, contents);
+      cfiRange = cfiFromBionicRange(sel.getRangeAt(0), doc, contents) || '';
     } else {
-      try { cfiRange = contents.cfiFromRange(sel.getRangeAt(0)); } catch { return; }
+      try { cfiRange = contents.cfiFromRange(sel.getRangeAt(0)); } catch {}
     }
-    if (!cfiRange) return;
-    window.parent.postMessage({ type: 'annotation-select', cfiRange, text }, '*');
+    _selectSuppressNav = true;
+    clearTimeout(onSelectionEnd._navTimer);
+    onSelectionEnd._navTimer = setTimeout(() => { _selectSuppressNav = false; }, 3000);
+    window.parent.postMessage({ type: 'annotation-select', cfiRange: cfiRange || '', text }, '*');
+    try {
+      const rect = sel.getRangeAt(0).getBoundingClientRect();
+      const lookupWord = text.split(/\s+/)[0];
+      if (lookupWord) {
+        window.parent.postMessage({
+          type: 'dict-offer',
+          word: lookupWord,
+          x: rect.left + rect.width / 2,
+          y: rect.top,
+        }, '*');
+      }
+    } catch { /* ignore */ }
   }
   doc.addEventListener('mouseup', onSelectionEnd);
-  doc.addEventListener('touchend', () => setTimeout(() => onSelectionEnd(), 50));
+  doc.addEventListener('touchend', () => setTimeout(() => onSelectionEnd(), 80));
+  doc.addEventListener('selectionchange', () => {
+    clearTimeout(_selChangeTimer);
+    const sel = win.getSelection?.() || doc.getSelection();
+    if (!sel || sel.isCollapsed) return;
+    _selChangeTimer = setTimeout(() => onSelectionEnd(), 280);
+  });
 }
 
 // Generate a CFI compatible with the non-bionic DOM, even when bionic is currently active.
@@ -1633,6 +1702,7 @@ function closeAnnotationUI() {
 }
 
 function closeAnnotationToolbar(keepHighlight = false) {
+  hideDictLookupChip();
   _pendingAnnotation = null;
   document.getElementById('annot-toolbar')?.classList.remove('open');
   document.getElementById('annot-backdrop')?.classList.remove('open');
@@ -1957,7 +2027,10 @@ function computeStatValue(id) {
       return formatEta(estimateBookPagesLeft());
     case 'currentTime': {
       const now = new Date();
-      return now.toLocaleTimeString('sl-SI', { hour: '2-digit', minute: '2-digit' });
+      if (prefs.statusBar?.clockFormat === '12h') {
+        return now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+      }
+      return now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false });
     }
     case 'bookTitle':
       return currentBook?.title || '';
@@ -1965,6 +2038,11 @@ function computeStatValue(id) {
       return currentBook?.author || '';
     case 'chapterTitle':
       return chapterLabelFromHref(currentHref);
+    case 'battery': {
+      if (!_batteryMgr) return '';
+      const pct = Math.round(_batteryMgr.level * 100);
+      return (_batteryMgr.charging ? '⚡\u202F' : '') + pct + '%';
+    }
     default:
       return '';
   }
@@ -2060,6 +2138,50 @@ function refreshStatusBarTime() {
   });
 }
 setInterval(refreshStatusBarTime, 30000);
+
+function getHeaderRevealZonePct() {
+  return prefs.headerRevealZonePct ?? 12;
+}
+
+function getHeaderRevealZonePx() {
+  return window.innerHeight * getHeaderRevealZonePct() / 100;
+}
+
+function inNavZone(x) {
+  const w = window.innerWidth;
+  const leftPct  = prefs.navZoneLeftPct  ?? 20;
+  const rightPct = prefs.navZoneRightPct ?? 20;
+  if (leftPct  > 0 && x < w * leftPct  / 100) return 'prev';
+  if (rightPct > 0 && x > w - w * rightPct / 100) return 'next';
+  return null;
+}
+
+function inHeaderRevealZone(y) {
+  return y < getHeaderRevealZonePx();
+}
+
+function applyNavZones() {
+  const root = document.documentElement;
+  root.style.setProperty('--nav-zone-left-pct',  (prefs.navZoneLeftPct  ?? 20) + '%');
+  root.style.setProperty('--nav-zone-right-pct', (prefs.navZoneRightPct ?? 20) + '%');
+}
+
+function applyHeaderRevealZone() {
+  document.documentElement.style.setProperty('--header-reveal-zone-pct', getHeaderRevealZonePct() + '%');
+}
+
+function getHeaderButtonBasePx() {
+  return window.matchMedia('(max-width: 640px)').matches ? 44 : 36;
+}
+
+function applyHeaderButtonSize() {
+  const root = document.documentElement;
+  const scale = prefs.headerButtonScalePct ?? 100;
+  const size  = Math.round(getHeaderButtonBasePx() * scale / 100);
+  root.style.setProperty('--reader-header-btn-size', size + 'px');
+  root.style.setProperty('--reader-header-icon-size', Math.max(14, Math.round(size * 0.33)) + 'px');
+  root.style.setProperty('--reader-header-min-height', (size + 8) + 'px');
+}
 
 // Apply CSS vars for edge inset (curved phone screens)
 function applyEdgePadding() {
@@ -2198,6 +2320,20 @@ function buildChapterMarkers() {
 }
 
 // ── Auto-hide header ──────────────────────────────────────────────────────────
+
+// Timestamp of the last header-reveal so we can suppress accidental button clicks
+// that arrive during/just-after the slide-in animation (pointer-events go live
+// immediately when header-peek is added, before the 250ms transition completes).
+let _headerRevealTs = 0;
+const HEADER_REVEAL_GUARD_MS = 350; // must be ≥ the 250ms transition
+
+function revealHeader() {
+  if (!readerLayout.classList.contains('header-peek')) {
+    _headerRevealTs = Date.now(); // record reveal time for click-guard
+  }
+  readerLayout.classList.add('header-peek');
+}
+
 function applyAutoHide() {
   readerLayout.classList.toggle('autohide-header', prefs.autoHideHeader);
   if (!prefs.autoHideHeader) {
@@ -2214,16 +2350,31 @@ function applyAutoHide() {
 // Show header when mouse enters the thin sensor zone at very top of page
 document.getElementById('header-sensor').addEventListener('mouseenter', () => {
   if (!prefs.autoHideHeader) return;
-  readerLayout.classList.add('header-peek');
+  revealHeader();
 });
 document.getElementById('header-sensor').addEventListener('touchstart', () => {
   if (!prefs.autoHideHeader) return;
-  readerLayout.classList.add('header-peek');
+  revealHeader();
 }, { passive: true });
+// Prevent the synthetic click that follows touchend from hitting a header button
+document.getElementById('header-sensor').addEventListener('touchend', (e) => {
+  if (!prefs.autoHideHeader) return;
+  e.preventDefault();
+}, { passive: false });
 document.getElementById('header-sensor').addEventListener('click', () => {
   if (!prefs.autoHideHeader) return;
-  readerLayout.classList.add('header-peek');
+  revealHeader();
 });
+
+// Capture-phase guard: swallow any click that lands on the header within
+// HEADER_REVEAL_GUARD_MS of a reveal, so the tap-to-show gesture never
+// accidentally activates a button underneath the user's finger.
+document.querySelector('.reader-header').addEventListener('click', (e) => {
+  if (prefs.autoHideHeader && Date.now() - _headerRevealTs < HEADER_REVEAL_GUARD_MS) {
+    e.stopImmediatePropagation();
+    e.preventDefault();
+  }
+}, true); // capture:true — runs before individual button handlers
 // Track whether the mouse is currently inside the header bar
 let isMouseOverHeader = false;
 document.querySelector('.reader-header').addEventListener('mouseenter', () => { isMouseOverHeader = true; });
@@ -2404,6 +2555,7 @@ function closeJumpPanel() {
   }
 }
 function closePanels() {
+  hideDictLookupChip();
   closeFontPicker();
   const activeEl = document.activeElement;
   const searchHadFocus = !!activeEl && searchSidebar.contains(activeEl);
@@ -2427,11 +2579,14 @@ function hasOpenPanel() {
 }
 
 async function returnToLibrary() {
+  hideDictLookupChip();
   // Show closing overlay immediately so the user sees feedback during async save
   loadingMsg.textContent = t('reader.closing');
   loadingOverlay.classList.remove('hidden');
 
   clearInterruptedSession();
+  cancelDebouncedSync();
+  stopPeriodicSync();
   if (!prefs.skipSaveOnClose) {
     await saveProgress(); // await so updated_at is committed before library reloads
   }
@@ -2651,6 +2806,53 @@ async function runSearch(query) {
 }
 
 // ── Dictionary ────────────────────────────────────────────────────────────────
+let _dictChipWord = '';
+
+function iframeCoordsToHost(messageEvent, x, y) {
+  const iframes = document.querySelectorAll('#epub-viewer iframe');
+  for (const iframe of iframes) {
+    if (iframe.contentWindow === messageEvent.source) {
+      const r = iframe.getBoundingClientRect();
+      return { x: r.left + x, y: r.top + y };
+    }
+  }
+  return { x, y };
+}
+
+function hideDictLookupChip() {
+  _dictChipWord = '';
+  const chip = document.getElementById('dict-lookup-chip');
+  if (!chip) return;
+  chip.classList.add('hidden');
+}
+
+function dictChipLabel() {
+  const label = t('reader.dict_lookup_chip');
+  return label.startsWith('reader.') ? 'Lookup' : label;
+}
+
+function showDictLookupChip(word, clientX, clientY) {
+  if (!word || !hasDictsEnabled()) return;
+  const chip = document.getElementById('dict-lookup-chip');
+  if (!chip) return;
+  _dictChipWord = word;
+  chip.textContent = dictChipLabel();
+  // Reveal off-screen first so we can measure the actual rendered width
+  chip.style.left = '-9999px';
+  chip.style.top  = '-9999px';
+  chip.classList.remove('hidden');
+  const pad   = 8;
+  const chipW = chip.offsetWidth  || 80;
+  const chipH = chip.offsetHeight || 28;
+  // left/top = center-x and top-y of highlight; CSS transform shifts chip above.
+  let x = clientX;
+  let y = clientY;
+  x = Math.max(pad + chipW / 2, Math.min(window.innerWidth  - pad - chipW / 2, x));
+  y = Math.max(pad + chipH,     Math.min(window.innerHeight - pad,              y));
+  chip.style.left = x + 'px';
+  chip.style.top  = y + 'px';
+}
+
 function esc(s) {
   return String(s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;')
@@ -2766,6 +2968,7 @@ async function renderDictSettings() {
 async function showDictPopup(word) {
   if (!word) return;
   if (!hasDictsEnabled()) return;
+  hideDictLookupChip();
   const popup     = document.getElementById('dict-popup');
   const backdrop  = document.getElementById('dict-backdrop');
   const wordEl    = document.getElementById('dict-popup-word');
@@ -2854,6 +3057,13 @@ function closeDictPopup() {
 
 // Receive messages from iframe contexts (origin may vary on iOS/blob views).
 window.addEventListener('message', (e) => {
+  if (e.data?.type === 'dict-offer') {
+    const word = String(e.data.word || '').trim();
+    if (!word || word.length > 120) return;
+    if (!hasDictsEnabled()) return;
+    const { x, y } = iframeCoordsToHost(e, Number(e.data.x) || 0, Number(e.data.y) || 0);
+    showDictLookupChip(word, x, y);
+  }
   if (e.data?.type === 'dict-lookup') {
     const word = String(e.data.word || '').trim();
     if (!word || word.length > 120) return;
@@ -2866,9 +3076,9 @@ window.addEventListener('message', (e) => {
   }
   if (e.data?.type === 'annotation-select') {
     const { cfiRange, text } = e.data;
-    if (cfiRange && text) {
+    if (text) {
       closeFootnotePopup();
-      showAnnotationToolbar(cfiRange, text);
+      showAnnotationToolbar(cfiRange || '', text);
     }
   }
   if (e.data?.type === 'annotation-click') {
@@ -3020,6 +3230,8 @@ function syncSettingsUi() {
   if (openCheckEl) openCheckEl.checked = prefs.skipOpenProgressCheck;
   const saveOnCloseEl = document.getElementById('skip-save-on-close-toggle');
   if (saveOnCloseEl) saveOnCloseEl.checked = prefs.skipSaveOnClose;
+  const saveOnHideEl = document.getElementById('save-on-hide-toggle');
+  if (saveOnHideEl) saveOnHideEl.checked = prefs.saveOnHide !== false;
   document.querySelectorAll('.theme-btn').forEach(b =>
     b.classList.toggle('active', b.dataset.theme === prefs.theme));
   const customPickersEl = document.getElementById('custom-color-pickers');
@@ -3037,6 +3249,22 @@ function syncSettingsUi() {
     if (el) el.value = prefs.edgePadding[side];
     if (vl) vl.textContent = prefs.edgePadding[side] + 'px';
   });
+  const navLeftEl = document.getElementById('nav-zone-left-slider');
+  const navLeftVl = document.getElementById('nav-zone-left-value');
+  if (navLeftEl) navLeftEl.value = prefs.navZoneLeftPct ?? 20;
+  if (navLeftVl) navLeftVl.textContent = (prefs.navZoneLeftPct ?? 20) + '%';
+  const navRightEl = document.getElementById('nav-zone-right-slider');
+  const navRightVl = document.getElementById('nav-zone-right-value');
+  if (navRightEl) navRightEl.value = prefs.navZoneRightPct ?? 20;
+  if (navRightVl) navRightVl.textContent = (prefs.navZoneRightPct ?? 20) + '%';
+  const headerRevealEl = document.getElementById('header-reveal-zone-slider');
+  const headerRevealVl = document.getElementById('header-reveal-zone-value');
+  if (headerRevealEl) headerRevealEl.value = prefs.headerRevealZonePct ?? 12;
+  if (headerRevealVl) headerRevealVl.textContent = (prefs.headerRevealZonePct ?? 12) + '%';
+  const headerBtnEl = document.getElementById('header-button-size-slider');
+  const headerBtnVl = document.getElementById('header-button-size-value');
+  if (headerBtnEl) headerBtnEl.value = prefs.headerButtonScalePct ?? 100;
+  if (headerBtnVl) headerBtnVl.textContent = (prefs.headerButtonScalePct ?? 100) + '%';
   // Paragraph options
   const piEl = document.getElementById('para-indent-toggle');
   if (piEl) piEl.checked = prefs.paraIndent;
@@ -3235,6 +3463,11 @@ function syncStatusBarSettings() {
   if (chapProgPos)    chapProgPos.value               = sb.chapProgressBar.position;
   if (chapProgThickSlider) chapProgThickSlider.value = sb.chapProgressBar.thickness;
   if (chapProgThickValue)  chapProgThickValue.textContent = sb.chapProgressBar.thickness + 'px';
+
+  // Clock format
+  const clockFmt = sb.clockFormat || '24h';
+  document.getElementById('sb-clock-12h')?.classList.toggle('active', clockFmt === '12h');
+  document.getElementById('sb-clock-24h')?.classList.toggle('active', clockFmt === '24h');
 }
 
 function populateSbFontSelect() {
@@ -3344,6 +3577,16 @@ function initStatusBarSettings() {
     prefs.statusBar.chapProgressBar.thickness = parseInt(e.target.value);
     document.getElementById('sb-chap-prog-thick-value').textContent = prefs.statusBar.chapProgressBar.thickness + 'px';
     applyProgressBarLayout(); persistPrefs();
+  });
+
+  // Clock format
+  ['12h', '24h'].forEach(fmt => {
+    document.getElementById(`sb-clock-${fmt}`)?.addEventListener('click', () => {
+      prefs.statusBar.clockFormat = fmt;
+      syncStatusBarSettings();
+      updateStatusBar(lastLocation);
+      persistPrefs();
+    });
   });
 }
 
@@ -3559,6 +3802,10 @@ function initSettingsUi() {
     prefs.skipSaveOnClose = e.target.checked;
     persistPrefs();
   });
+  document.getElementById('save-on-hide-toggle')?.addEventListener('change', (e) => {
+    prefs.saveOnHide = e.target.checked;
+    persistPrefs();
+  });
   document.getElementById('hyphenation-toggle')?.addEventListener('change', (e) => {
     prefs.hyphenation = e.target.checked;
     const langRow = document.getElementById('hyphen-lang-select')?.closest('.setting-row');
@@ -3589,10 +3836,46 @@ function initSettingsUi() {
     });
   });
 
+  document.getElementById('nav-zone-left-slider')?.addEventListener('input', (e) => {
+    prefs.navZoneLeftPct = parseInt(e.target.value);
+    document.getElementById('nav-zone-left-value').textContent = prefs.navZoneLeftPct + '%';
+    applyNavZones(); persistPrefs();
+  });
+  document.getElementById('nav-zone-right-slider')?.addEventListener('input', (e) => {
+    prefs.navZoneRightPct = parseInt(e.target.value);
+    document.getElementById('nav-zone-right-value').textContent = prefs.navZoneRightPct + '%';
+    applyNavZones(); persistPrefs();
+  });
+  document.getElementById('header-reveal-zone-slider')?.addEventListener('input', (e) => {
+    prefs.headerRevealZonePct = parseInt(e.target.value);
+    document.getElementById('header-reveal-zone-value').textContent = prefs.headerRevealZonePct + '%';
+    applyHeaderRevealZone(); persistPrefs();
+  });
+  document.getElementById('header-button-size-slider')?.addEventListener('input', (e) => {
+    prefs.headerButtonScalePct = parseInt(e.target.value);
+    const vl = document.getElementById('header-button-size-value');
+    if (vl) vl.textContent = prefs.headerButtonScalePct + '%';
+    applyHeaderButtonSize(); persistPrefs();
+  });
+
 
   // Dictionary popup close
   document.getElementById('dict-popup-close').addEventListener('click', closeDictPopup);
   document.getElementById('dict-backdrop').addEventListener('click', closeDictPopup);
+  document.getElementById('dict-lookup-chip')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const word = _dictChipWord;
+    hideDictLookupChip();
+    closeAnnotationToolbar(true); // keep press highlight visible while dict opens
+    if (word) showDictPopup(word);
+  });
+  document.addEventListener('pointerdown', (e) => {
+    const chip = document.getElementById('dict-lookup-chip');
+    if (!chip || chip.classList.contains('hidden')) return;
+    // Keep chip visible while the annotation toolbar is open (user may tap highlight colors).
+    if (document.getElementById('annot-toolbar')?.classList.contains('open')) return;
+    if (!chip.contains(e.target)) hideDictLookupChip();
+  }, true);
 
   document.querySelectorAll('.theme-btn').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -3624,6 +3907,9 @@ function initSettingsUi() {
   initStatusBarSettings();
   applyStatusBarStyles();
   applyEdgePadding();
+  applyNavZones();
+  applyHeaderRevealZone();
+  applyHeaderButtonSize();
   applyPageShadow();
   initSliderButtons();
 }
@@ -3674,6 +3960,7 @@ function updateProgress(location) {
       forceRemote: !alreadySent && !bookmarkPending,
       allowRemote: !alreadySent && !bookmarkPending,
     });
+    cancelDebouncedSync();
     writeInterruptedSession();
     if (!alreadySent && !bookmarkPending) {
       lastSentChapterHref = href;
@@ -3687,6 +3974,7 @@ function updateProgress(location) {
 
   // Status bar overlays (replacing old page info overlays)
   if (isReady) lastLocation = location;
+  if (isReady && currentBook && (cfi || pct > 0)) scheduleDebouncedSync();
   trackReadingSpeed();
   updateStatusBar(location);
   scheduleBionicPrefetchAround(location);
@@ -3827,14 +4115,130 @@ function pushRemoteProgress(docKey, xpointer, pct) {
   }).catch(() => {});
 }
 
-function pushInternalProgress(docKey, xpointer, pct) {
-  return apiFetch(`/kosync/internal/${encodeURIComponent(docKey)}`, {
+function pushInternalProgress(docKey, xpointer, pct, force = false) {
+  const qs = force ? '?force=1' : '';
+  return apiFetch(`/kosync/internal/${encodeURIComponent(docKey)}${qs}`, {
     method: 'PUT',
     body: JSON.stringify({ progress: xpointer, percentage: pct, device: 'web', device_id: 'codexa-web' }),
   }).catch(() => {});
 }
 
-async function saveProgress({ forceRemote = false, allowRemote = true } = {}) {
+function cancelDebouncedSync() {
+  if (syncDebounceTimer) {
+    clearTimeout(syncDebounceTimer);
+    syncDebounceTimer = null;
+  }
+}
+
+function stopPeriodicSync() {
+  if (syncIntervalTimer) {
+    clearInterval(syncIntervalTimer);
+    syncIntervalTimer = null;
+  }
+}
+
+// Initialise the Battery Status API once. Triggers a status-bar refresh on any change.
+// Silently no-ops on browsers that don't support it (Firefox, Safari, iOS).
+async function initBattery() {
+  if (_batteryMgr || !navigator.getBattery) return;
+  try {
+    _batteryMgr = await navigator.getBattery();
+    const refresh = () => { if (lastLocation) updateStatusBar(lastLocation); };
+    _batteryMgr.addEventListener('levelchange',   refresh);
+    _batteryMgr.addEventListener('chargingchange', refresh);
+    refresh(); // apply immediately
+  } catch { /* not available */ }
+}
+
+function startPeriodicSync() {
+  stopPeriodicSync();
+  syncIntervalTimer = setInterval(() => {
+    if (!isReady || !currentBook) return;
+    console.log('[kosync] periodic sync (4 min)');
+    void saveProgress({ forceRemote: true, inSession: true });
+  }, SYNC_INTERVAL_MS);
+}
+
+function scheduleDebouncedSync() {
+  if (!isReady || !currentBook) return;
+  cancelDebouncedSync();
+  syncDebounceTimer = setTimeout(() => {
+    syncDebounceTimer = null;
+    if (!isReady || !currentBook) return;
+    console.log('[kosync] debounced sync (60s inactivity)');
+    void saveProgress({ forceRemote: true, inSession: true });
+  }, SYNC_DEBOUNCE_MS);
+}
+
+function saveOnAppHide() {
+  if (!isReady || !currentBook) return;
+  const now = Date.now();
+  if (now - lastHideSaveTs < 2000) return;
+  lastHideSaveTs = now;
+  cancelDebouncedSync();
+  console.log('[kosync] save on app hide / screen lock');
+
+  const cfi = currentCfi || '';
+  const pct = currentPct > 0 ? currentPct : lastKnownGoodPct;
+  if (!cfi && pct === 0) return;
+  // Skip all network calls if position hasn't moved since the last successful remote sync
+  if (cfi && cfi === lastSyncedCfi) {
+    try { localStorage.setItem(`br_progress_${currentBook.file_hash}`, JSON.stringify({ cfi_position: cfi, percentage: pct, device: 'web' })); } catch { /* ignore */ }
+    return;
+  }
+
+  const token = getToken();
+  const authHeader = token ? `Bearer ${token}` : '';
+
+  // sendBeacon is the most reliable way to fire a request when the page is hidden/frozen.
+  // Falls back to keepalive fetch for browsers that don't support it or when saveOnHide is off.
+  const tryBeacon = (url, body) => {
+    if (typeof navigator.sendBeacon === 'function') {
+      const blob = new Blob([JSON.stringify(body)], { type: 'application/json' });
+      // sendBeacon cannot send auth headers — use a URL-encoded token param as fallback
+      // The server accepts it via query string when the header is absent.
+      const urlWithToken = authHeader ? url + (url.includes('?') ? '&' : '?') + '_token=' + encodeURIComponent(token) : url;
+      const sent = navigator.sendBeacon(urlWithToken, blob);
+      if (sent) return true;
+    }
+    return false;
+  };
+
+  const progressPayload = { cfi_position: cfi, percentage: pct, device: 'web' };
+  const beaconSent = tryBeacon(`/api/progress/${currentBook.file_hash}`, progressPayload);
+  if (!beaconSent) {
+    // Fallback: keepalive fetch
+    const headers = { 'Content-Type': 'application/json', ...(authHeader ? { Authorization: authHeader } : {}) };
+    fetch(`/api/progress/${currentBook.file_hash}`, { method: 'PUT', headers, body: JSON.stringify(progressPayload), keepalive: true }).catch(() => {});
+  }
+
+  const hideWouldGoBackwards = pct < bestKnownRemotePct - 0.005;
+  if (pct > 0 && (prefs.saveOnHide || !prefs.skipSaveOnClose) && !hideWouldGoBackwards) {
+    const docKey = externalDocKey();
+    const xp     = koReaderXPointer();
+    const kosyncPayload = { progress: xp, percentage: pct, device: 'web', device_id: 'codexa-web' };
+    const remotePayload = { document: docKey, ...kosyncPayload };
+
+    if (!tryBeacon(`/api/kosync/internal/${encodeURIComponent(docKey)}`, kosyncPayload)) {
+      const headers = { 'Content-Type': 'application/json', ...(authHeader ? { Authorization: authHeader } : {}) };
+      fetch(`/api/kosync/internal/${encodeURIComponent(docKey)}`, { method: 'PUT', headers, body: JSON.stringify(kosyncPayload), keepalive: true }).catch(() => {});
+    }
+    if (!tryBeacon(`/api/kosync/remote/${encodeURIComponent(docKey)}`, remotePayload)) {
+      const headers = { 'Content-Type': 'application/json', ...(authHeader ? { Authorization: authHeader } : {}) };
+      fetch(`/api/kosync/remote/${encodeURIComponent(docKey)}`, { method: 'PUT', headers, body: JSON.stringify(remotePayload), keepalive: true }).catch(() => {});
+    }
+    lastSyncedCfi = cfi; // fire-and-forget — mark as synced even without confirmation
+    if (pct > bestKnownRemotePct) bestKnownRemotePct = pct;
+  } else if (hideWouldGoBackwards) {
+    console.log('[kosync] saveOnAppHide: skipping kosync — would go backwards:', Math.round(pct * 100) + '% < known best ' + Math.round(bestKnownRemotePct * 100) + '%');
+  }
+
+  try {
+    localStorage.setItem(`br_progress_${currentBook.file_hash}`, JSON.stringify(progressPayload));
+  } catch { /* ignore */ }
+}
+
+async function saveProgress({ forceRemote = false, allowRemote = true, inSession = false, forced = false } = {}) {
   if (!currentBook || !isReady) return;
   const cfi = currentCfi || '';
   const pct = currentPct > 0 ? currentPct : lastKnownGoodPct;
@@ -3842,29 +4246,46 @@ async function saveProgress({ forceRemote = false, allowRemote = true } = {}) {
   console.log('[pos] SAVE cfi:', cfi.slice(0,60), 'pct:', (pct*100).toFixed(2)+'%');
   const docKey = externalDocKey();
   const posChanged = cfi !== openCfi;
-  const shouldPushRemote = pct > 0 && !prefs.skipSaveOnClose && (forceRemote || (allowRemote && posChanged));
-  console.log('[kosync] saveProgress docKey:', docKey, 'cfi:', cfi.slice(0, 40), 'pct:', Math.round(pct * 100) + '%', shouldPushRemote ? '' : '(no remote push)');
-  const progressPayload = { cfi_position: cfi, percentage: pct, device: 'web' };
+  // Skip remote push when position hasn't moved since the last successful remote sync.
+  // `forced` bypasses this — used for the manual sync button so the user can always re-push
+  // even if lastSyncedCfi matches (e.g. another device overwrote the server behind our back).
+  const alreadySynced = !forced && cfi !== '' && cfi === lastSyncedCfi;
+  const shouldPushRemote = !alreadySynced && pct > 0 && (inSession || !prefs.skipSaveOnClose) && (forceRemote || (allowRemote && posChanged));
+  // Never push to cross-device kosync if it would overwrite a higher known position.
+  // `forced` (manual sync with user confirmation) is allowed to push backwards.
+  const wouldGoBackwards = !forced && pct < bestKnownRemotePct - 0.005;
+  const shouldPushKosync = shouldPushRemote && !wouldGoBackwards;
+  if (wouldGoBackwards && shouldPushRemote) {
+    console.log('[kosync] saveProgress: skipping kosync push — would go backwards:', Math.round(pct * 100) + '% < known best ' + Math.round(bestKnownRemotePct * 100) + '%');
+  }
+  console.log('[kosync] saveProgress docKey:', docKey, 'cfi:', cfi.slice(0, 40), 'pct:', Math.round(pct * 100) + '%', shouldPushKosync ? '' : (alreadySynced ? '(already synced)' : wouldGoBackwards ? '(would go backwards)' : '(no remote push)'));
+  // When force-pushing backwards the server needs force:true to bypass its own high-water mark
+  const progressPayload = { cfi_position: cfi, percentage: pct, device: 'web', ...(forced ? { force: true } : {}) };
   const saves = [
     apiFetch(`/progress/${currentBook.file_hash}`, {
       method: 'PUT',
       body: JSON.stringify(progressPayload),
     }).then(() => {
       if (pct > 0) {
-        try { localStorage.setItem(`br_progress_${currentBook.file_hash}`, JSON.stringify(progressPayload)); } catch { /* ignore */ }
+        const cachePayload = { cfi_position: cfi, percentage: pct, device: 'web' };
+        try { localStorage.setItem(`br_progress_${currentBook.file_hash}`, JSON.stringify(cachePayload)); } catch { /* ignore */ }
       }
     }).catch(() => {}),
   ];
-  if (shouldPushRemote) {
+  if (shouldPushKosync) {
     saves.push(pushRemoteProgress(docKey, koReaderXPointer(), pct));
-    saves.push(pushInternalProgress(docKey, koReaderXPointer(), pct));
+    saves.push(pushInternalProgress(docKey, koReaderXPointer(), pct, forced));
   }
   await Promise.allSettled(saves);
+  if (shouldPushKosync) {
+    lastSyncedCfi = cfi; // record what we just synced
+    bestKnownRemotePct = pct; // update high-water mark (may go down if user confirmed backwards)
+  }
 }
 
 // Fire-and-forget version used when navigating away — uses keepalive:true so
 // the browser keeps the requests alive even after the page unloads.
-function saveProgressBackground() {
+function saveProgressBackground({ inSession = false } = {}) {
   if (!currentBook || !isReady) return;
   const cfi = currentCfi || '';
   const pct = currentPct > 0 ? currentPct : lastKnownGoodPct;
@@ -3877,14 +4298,16 @@ function saveProgressBackground() {
   const opts = (body) => ({ method: 'PUT', headers, body: JSON.stringify(body), keepalive: true });
   const docKey = externalDocKey();
   const xp     = koReaderXPointer();
-  const posChanged = cfi !== openCfi;
+  const posChanged    = cfi !== openCfi;
+  const alreadySynced = cfi !== '' && cfi === lastSyncedCfi;
   fetch(`/api/progress/${currentBook.file_hash}`, opts({ cfi_position: cfi, percentage: pct, device: 'web' })).catch(() => {});
   if (pct > 0) {
     try { localStorage.setItem(`br_progress_${currentBook.file_hash}`, JSON.stringify({ cfi_position: cfi, percentage: pct, device: 'web' })); } catch { /* ignore */ }
   }
-  if (pct > 0 && !prefs.skipSaveOnClose && posChanged) {
+  if (!alreadySynced && pct > 0 && (inSession || !prefs.skipSaveOnClose) && (posChanged || inSession) && pct >= bestKnownRemotePct - 0.005) {
     fetch(`/api/kosync/remote/${encodeURIComponent(docKey)}`,   opts({ document: docKey, progress: xp, percentage: pct, device: 'web', device_id: 'codexa-web' })).catch(() => {});
     fetch(`/api/kosync/internal/${encodeURIComponent(docKey)}`, opts({ progress: xp, percentage: pct, device: 'web', device_id: 'codexa-web' })).catch(() => {});
+    if (pct > bestKnownRemotePct) bestKnownRemotePct = pct;
   }
 }
 
@@ -3898,10 +4321,11 @@ function showSyncDialog(best, localPct, localTime) {
     const fmtTs  = (ts) => ts ? new Date(ts * 1000).toLocaleString(getCurrentLang()) : t('reader.sync_dlg_unknown_time');
     const rDate  = fmtTs(best.timestamp);
     const lDate  = fmtTs(localTime);
-    const rNewer = (best.timestamp || 0) > (localTime || 0);
+    const rNewer = (best.percentage || 0) >= localPct; // show the forward position as the highlight
     backdrop.innerHTML = `
       <div class="modal" role="dialog" aria-modal="true" style="max-width:460px">
-        <h3 style="margin:0 0 1rem;font-size:1rem;font-weight:600">${t('reader.sync_dlg_title')}</h3>
+        <h3 style="margin:0 0 .5rem;font-size:1rem;font-weight:600">${t('reader.sync_dlg_title')}</h3>
+        <p style="margin:0 0 1rem;font-size:.82rem;color:var(--color-text-muted)">${t('reader.sync_dlg_hint')}</p>
         <table style="width:100%;font-size:.85rem;border-collapse:collapse;margin-bottom:1.5rem">
           <thead>
             <tr style="color:var(--color-text-muted);font-size:.75rem;text-transform:uppercase;letter-spacing:.04em">
@@ -3912,12 +4336,12 @@ function showSyncDialog(best, localPct, localTime) {
           </thead>
           <tbody>
             <tr style="${rNewer ? 'font-weight:600' : ''}">
-              <td style="padding:.3rem 0">${best.device || 'KOReader'} ${rNewer ? '★' : ''}</td>
+              <td style="padding:.3rem 0">${best.device || 'KOReader'} ${rNewer ? '▲' : ''}</td>
               <td style="text-align:right">${rPct}%</td>
               <td style="text-align:right;color:var(--color-text-muted);font-size:.78rem">${rDate}</td>
             </tr>
             <tr style="${!rNewer ? 'font-weight:600' : ''}">
-              <td style="padding:.3rem 0">${t('reader.sync_dlg_this_reader')} ${!rNewer ? '★' : ''}</td>
+              <td style="padding:.3rem 0">${t('reader.sync_dlg_this_reader')} ${!rNewer ? '▲' : ''}</td>
               <td style="text-align:right">${lPct}%</td>
               <td style="text-align:right;color:var(--color-text-muted);font-size:.78rem">${lDate}</td>
             </tr>
@@ -3932,7 +4356,8 @@ function showSyncDialog(best, localPct, localTime) {
     const close = (ok) => { backdrop.remove(); resolve(ok); };
     backdrop.querySelector('#sync-dlg-yes').addEventListener('click',    () => close(true));
     backdrop.querySelector('#sync-dlg-ignore').addEventListener('click', () => close(false));
-    backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(false); });
+    // Backdrop click defaults to Jump (the forward/safe direction — never accidentally go backwards)
+    backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(true); });
   });
 }
 
@@ -3970,6 +4395,13 @@ async function syncOnOpen(localProgress) {
   const bestTime  = best.timestamp             || 0;
   console.log('[kosync] best:', best.device, Math.round((best.percentage||0)*100)+'%', 'ts:', bestTime, 'localTime:', localTime);
 
+  // Always advance the high-water mark; ensures we never push backwards later
+  const remoteHighWater = Math.max(localPct, best.percentage || 0);
+  if (remoteHighWater > bestKnownRemotePct) {
+    bestKnownRemotePct = remoteHighWater;
+    console.log('[kosync] bestKnownRemotePct →', Math.round(bestKnownRemotePct * 100) + '%');
+  }
+
   // If the remote xpointer exactly matches our last-pushed xpointer, both readers
   // are at the same paragraph — skip the dialog even if percentages differ (they
   // are on different scales and the mismatch is expected, not a real position gap).
@@ -3983,10 +4415,12 @@ async function syncOnOpen(localProgress) {
   console.log('[kosync] xpointerMatch:', xpointerMatch, 'local:', localXPointer, 'remote:', best.progress);
 
   const pctDiffers = Math.abs((best.percentage || 0) - localPct) > 0.01;
-  if (!xpointerMatch && pctDiffers) {
+  // Never silently jump backwards — only prompt when the remote is ahead.
+  // If remote is behind local, it means we already synced more recently from this
+  // device (e.g. the hide-beacon fired but localProgress hasn't updated yet).
+  const remoteIsAhead = (best.percentage || 0) > localPct + 0.005;
+  if (!xpointerMatch && pctDiffers && remoteIsAhead) {
     const doSync = await showSyncDialog(best, localPct, localTime);
-    // Return both percentage and the xpointer string so the caller can navigate
-    // directly to a spine item when the xpointer is a DocFragment-only reference.
     if (doSync) return { percentage: best.percentage, progress: best.progress };
   }
   return null;
@@ -4134,6 +4568,7 @@ async function startRendition(displayCfi = null) {
 
 // ── Navigation ────────────────────────────────────────────────────────────────
 function goNext() {
+  hideDictLookupChip();
   if (deferredNextPending) return;
 
   const _lL        = rendition?.currentLocation?.();
@@ -4175,24 +4610,44 @@ function goNext() {
   rendition?.next();
 }
 function goPrev() {
+  hideDictLookupChip();
   deferredNextPending = false;
   console.log(`[nav] PREV | page=${currentChapPage}/${currentChapTotal}`);
-  pendingNavDirection = 'prev'; sessionPageCount++; rendition?.prev();
+  pendingNavDirection = 'prev';
+  sessionPageCount++;
+  rendition?.prev();
 }
 
 // ── Touch / swipe navigation ──────────────────────────────────────────────────
 const SWIPE_THRESHOLD = 24;   // min px horizontal distance
 const SWIPE_MAX_VERT  = 130;  // max vertical drift allowed
 const TAP_MAX_DRIFT   = 20;   // max px movement still counted as a tap
-const TOP_REVEAL_ZONE = 92;   // px from top where tap reveals header
 const SWIPE_DOWN_OPEN = 42;   // px downward swipe to reveal header
 const SWIPE_UP_CLOSE  = 30;   // px upward swipe to hide header when open
 // iOS detection (Chrome/Safari on iPhone/iPad use WebKit with different iframe touch behaviour)
 const isIOS = /iP(hone|od|ad)/.test(navigator.userAgent) ||
               (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+/** Phone / tablet / PWA touch device. */
+function isTouchReader() {
+  return isIOS ||
+    isAndroidApp() ||
+    navigator.maxTouchPoints > 0 ||
+    !!window.matchMedia?.('(pointer: coarse)')?.matches;
+}
+
+/** Android / Vivaldi PWA: keep native selection handles; our toolbar moves to the top. */
+function useNativeTextSelection() {
+  return isTouchReader() && !isIOS;
+}
+
+if (useNativeTextSelection()) {
+  document.documentElement.dataset.nativeTextSelect = '1';
+}
 let touchStartX = 0;
 let touchStartY = 0;
 let suppressNextTap = false; // set by long-press dict lookup to prevent navigation on touchend
+let _selectSuppressNav = false; // true while a text-selection gesture is active — blocks swipe-nav preventDefault
 
 function handleTouchStart(e) {
   touchStartX = e.changedTouches[0].clientX;
@@ -4206,7 +4661,9 @@ function handleTouchEnd(e) {
   const absDy = Math.abs(dy);
   const y     = e.changedTouches[0].clientY;
   if (prefs.autoHideHeader && dy > SWIPE_DOWN_OPEN && absDx < 70) {
+    const wasHidden = !readerLayout.classList.contains('header-peek');
     if (!readerLayout.classList.toggle('header-peek')) closeJumpPanel();
+    else if (wasHidden) _headerRevealTs = Date.now();
     return;
   }
   if (prefs.autoHideHeader && dy < -SWIPE_UP_CLOSE && absDx < 70 && readerLayout.classList.contains('header-peek')) {
@@ -4215,16 +4672,19 @@ function handleTouchEnd(e) {
     return;
   }
   if (absDx < TAP_MAX_DRIFT && absDy < TAP_MAX_DRIFT) {
-    if (prefs.autoHideHeader && y < TOP_REVEAL_ZONE + 20) {
-      readerLayout.classList.add('header-peek');
+    const x = e.changedTouches[0].clientX;
+    if (prefs.autoHideHeader && inHeaderRevealZone(y)) {
+      revealHeader();
       return;
     }
-    const x         = e.changedTouches[0].clientX;
-    const leftZone  = prefs.edgePadding.left  + prefs.margin;
-    const rightZone = prefs.edgePadding.right + prefs.margin;
-    if (leftZone  > 0 && x < leftZone)                        { goPrev(); return; }
-    if (rightZone > 0 && x > window.innerWidth - rightZone)   { goNext(); return; }
-    if (prefs.autoHideHeader) readerLayout.classList.toggle('header-peek');
+    const nav = inNavZone(x);
+    if (nav === 'prev') { goPrev(); return; }
+    if (nav === 'next') { goNext(); return; }
+    if (prefs.autoHideHeader) {
+      const wasHidden = !readerLayout.classList.contains('header-peek');
+      readerLayout.classList.toggle('header-peek');
+      if (wasHidden && readerLayout.classList.contains('header-peek')) _headerRevealTs = Date.now();
+    }
     return;
   }
   if (absDx > SWIPE_THRESHOLD && absDy < SWIPE_MAX_VERT) {
@@ -4240,6 +4700,9 @@ epubViewer.addEventListener('touchend',   handleTouchEnd,   { passive: false });
 function attachIframeTouchNav(view) {
   const win = view?.contents?.window;
   if (!win) return;
+  if (win.__codexaTouchNav) return;
+  win.__codexaTouchNav = true;
+  const touchTextMode = isTouchReader();
   // No tap-to-page navigation on mobile; swipe-only navigation.
   let iframeOffX = 0, iframeOffY = 0;
 
@@ -4252,6 +4715,9 @@ function attachIframeTouchNav(view) {
   }, { passive: false });
 
   win.addEventListener('touchmove', (e) => {
+    // Never call preventDefault during text selection — it kills Android drag handles.
+    const sel = win.getSelection?.();
+    if (touchTextMode || _selectSuppressNav || (sel && !sel.isCollapsed)) return;
     const dx = Math.abs(e.touches[0].clientX + iframeOffX - touchStartX);
     const dy = Math.abs(e.touches[0].clientY + iframeOffY - touchStartY);
     if (dx > 8 && dx > dy) e.preventDefault();
@@ -4260,7 +4726,7 @@ function attachIframeTouchNav(view) {
   win.addEventListener('touchend', (e) => {
     if (suppressNextTap) {
       suppressNextTap = false;
-      if (e.cancelable) e.preventDefault();
+      // Do not preventDefault — that cancels Android selection handles / toolbar.
       return;
     }
     const cx     = e.changedTouches[0].clientX + iframeOffX;
@@ -4271,7 +4737,9 @@ function attachIframeTouchNav(view) {
     const absDy  = Math.abs(dy);
     if (prefs.autoHideHeader && dy > SWIPE_DOWN_OPEN && absDx < 70) {
       if (e.cancelable) e.preventDefault();
+      const wasHidden = !readerLayout.classList.contains('header-peek');
       if (!readerLayout.classList.toggle('header-peek')) closeJumpPanel();
+      else if (wasHidden) _headerRevealTs = Date.now();
       return;
     }
     if (prefs.autoHideHeader && dy < -SWIPE_UP_CLOSE && absDx < 70 && readerLayout.classList.contains('header-peek')) {
@@ -4281,23 +4749,16 @@ function attachIframeTouchNav(view) {
       return;
     }
     if (absDx < TAP_MAX_DRIFT && absDy < TAP_MAX_DRIFT) {
-      // Tap in the margin (between text and screen edge) → navigate
-      const leftZone  = prefs.edgePadding.left  + prefs.margin;
-      const rightZone = prefs.edgePadding.right + prefs.margin;
-      if (leftZone > 0 && cx < leftZone) {
+      if (prefs.autoHideHeader && inHeaderRevealZone(cy)) {
         if (e.cancelable) e.preventDefault();
-        goPrev();
+        revealHeader();
         return;
       }
-      if (rightZone > 0 && cx > window.innerWidth - rightZone) {
+      const nav = inNavZone(cx);
+      if (nav) {
         if (e.cancelable) e.preventDefault();
-        goNext();
+        if (nav === 'prev') goPrev(); else goNext();
         return;
-      }
-      // Tap outside margin — reveal/toggle header
-      if (prefs.autoHideHeader && cy < TOP_REVEAL_ZONE + 20) {
-        if (e.cancelable) e.preventDefault();
-        readerLayout.classList.add('header-peek');
       }
       return;
     }
@@ -4444,6 +4905,7 @@ async function resizeRenditionToViewer() {
 }
 
 window.addEventListener('resize', debounce(() => {
+  applyHeaderButtonSize();
   // When running inside the Android app, system bars are always hidden in reader.
   // Update layout vars here since this resize fires right after bars hide/show.
   if (isAndroidApp()) {
@@ -4708,6 +5170,7 @@ document.querySelectorAll('.annot-color-btn').forEach(btn => {
     const color = btn.dataset.color;
     if (!color || !_pendingAnnotation) return;
     const { cfiRange, text } = _pendingAnnotation;
+    if (!cfiRange) { toast('Cannot save highlight – position could not be determined'); return; }
     closeAnnotationToolbar();
     await createAnnotation(cfiRange, text, color, '');
   });
@@ -4731,6 +5194,7 @@ document.getElementById('annot-note-save')?.addEventListener('click', async () =
   } else if (_pendingAnnotation) {
     // Create mode — color defaults to yellow when opened via Note button directly
     const { cfiRange, text } = _pendingAnnotation;
+    if (!cfiRange) { toast('Cannot save note – position could not be determined'); return; }
     closeAnnotationNoteEditor();
     await createAnnotation(cfiRange, text, 'yellow', note);
   }
@@ -4934,6 +5398,54 @@ document.getElementById('btn-annotation-accept').addEventListener('click', () =>
   if (prefs.autoHideHeader) readerLayout.classList.remove('header-peek');
   void saveProgress({ forceRemote: true });
 });
+// Manual sync button — always force-pushes the current position.
+// If the current position is behind the last known high-water mark, asks for confirmation
+// (so accidental forward jumps can be corrected) before overwriting.
+document.getElementById('btn-sync')?.addEventListener('click', async () => {
+  const btn = document.getElementById('btn-sync');
+  if (!isReady || !currentBook || btn.disabled) return;
+  const pct = currentPct > 0 ? currentPct : lastKnownGoodPct;
+  const isBackwards = pct > 0 && pct < bestKnownRemotePct - 0.005;
+  if (isBackwards) {
+    const curPctStr  = Math.round(pct * 100) + '%';
+    const bestPctStr = Math.round(bestKnownRemotePct * 100) + '%';
+    const ok = await new Promise(resolve => {
+      const bd = document.createElement('div');
+      bd.className = 'modal-backdrop';
+      bd.innerHTML = `
+        <div class="modal" role="dialog" aria-modal="true" style="max-width:420px">
+          <h3 style="margin:0 0 .75rem;font-size:1rem;font-weight:600">${t('reader.sync_back_title')}</h3>
+          <p style="margin:0 0 1.5rem;font-size:.85rem;line-height:1.5">
+            ${t('reader.sync_back_body', { cur: curPctStr, best: bestPctStr })}
+          </p>
+          <div class="modal-footer">
+            <button class="btn btn-secondary" id="sync-back-cancel">${t('reader.sync_back_cancel')}</button>
+            <button class="btn btn-primary"   id="sync-back-ok">${t('reader.sync_back_confirm', { cur: curPctStr })}</button>
+          </div>
+        </div>`;
+      document.body.appendChild(bd);
+      const close = v => { bd.remove(); resolve(v); };
+      bd.querySelector('#sync-back-ok').addEventListener('click',     () => close(true));
+      bd.querySelector('#sync-back-cancel').addEventListener('click', () => close(false));
+      bd.addEventListener('click', e => { if (e.target === bd) close(false); });
+    });
+    if (!ok) return;
+    // User confirmed — reset the high-water mark to the current position
+    bestKnownRemotePct = pct;
+  }
+  btn.classList.add('btn-sync-busy');
+  btn.disabled = true;
+  try {
+    await saveProgress({ forceRemote: true, inSession: true, forced: true });
+    cancelDebouncedSync();
+  } finally {
+    btn.disabled = false;
+    btn.classList.remove('btn-sync-busy');
+    btn.classList.add('btn-sync-done');
+    setTimeout(() => btn.classList.remove('btn-sync-done'), 1500);
+  }
+});
+
 document.getElementById('btn-jump-pct').addEventListener('click', () => {
   if (jumpPctPanel.style.display !== 'none') {
     closeJumpPanel();
@@ -5026,13 +5538,23 @@ document.getElementById('btn-next-chap')?.addEventListener('click', () => {
     scheduleBionicPrefetchAround(loc);
   }).catch(() => {});
 });
-document.querySelector('.nav-zone-prev')?.addEventListener('click', goPrev);
-document.querySelector('.nav-zone-next')?.addEventListener('click', goNext);
-document.querySelector('.nav-zone-prev')?.addEventListener('touchend', (e) => { if (e.cancelable) e.preventDefault(); goPrev(); }, { passive: false });
-document.querySelector('.nav-zone-next')?.addEventListener('touchend', (e) => { if (e.cancelable) e.preventDefault(); goNext(); }, { passive: false });
+function handleNavZoneActivate(direction, e) {
+  const y = e.clientY ?? e.changedTouches?.[0]?.clientY;
+  if (prefs.autoHideHeader && y != null && inHeaderRevealZone(y)) {
+    revealHeader();
+    return;
+  }
+  if (direction === 'prev') goPrev(); else goNext();
+}
+document.querySelector('.nav-zone-prev')?.addEventListener('click', e => { e.stopPropagation(); handleNavZoneActivate('prev', e); });
+document.querySelector('.nav-zone-next')?.addEventListener('click', e => { e.stopPropagation(); handleNavZoneActivate('next', e); });
+document.querySelector('.nav-zone-prev')?.addEventListener('touchend', (e) => { if (e.cancelable) e.preventDefault(); handleNavZoneActivate('prev', e); }, { passive: false });
+document.querySelector('.nav-zone-next')?.addEventListener('touchend', (e) => { if (e.cancelable) e.preventDefault(); handleNavZoneActivate('next', e); }, { passive: false });
 document.getElementById('btn-prev').addEventListener('keydown', e => { if (e.key === 'Enter') goPrev(); });
 document.getElementById('btn-next').addEventListener('keydown', e => { if (e.key === 'Enter') goNext(); });
 window.addEventListener('beforeunload', () => {
+  cancelDebouncedSync();
+  stopPeriodicSync();
   if (!prefs.skipSaveOnClose) saveProgressBackground();
   endStatsSessionBackground();
 });
@@ -5096,6 +5618,9 @@ async function init() {
     document.title = `${currentBook.title} — Codexa`;
     loadBookPrefs(currentBook.id);
     syncSettingsUi();
+    if (currentBook.id) {
+      apiFetch(`/books/${currentBook.id}/opened`, { method: 'POST' }).catch(() => {});
+    }
   } catch {
     const msg = t('reader.err_no_book');
     loadingMsg.textContent = msg;
@@ -5190,6 +5715,8 @@ async function init() {
       console.log('[reader] localProgress:', localProgress?.cfi_position?.slice(0, 60), 'pct:', localProgress?.percentage);
       if (localProgress?.percentage > 0) {
         lastKnownGoodPct = localProgress.percentage;
+        // Seed the high-water mark so we never push below what the server already has
+        if (localProgress.percentage > bestKnownRemotePct) bestKnownRemotePct = localProgress.percentage;
         // Keep the offline metadata in sync so "Currently Reading" is correct offline
         getBookMeta(Number(bookId)).then(meta => {
           if (meta) saveBookMeta({ ...meta, percentage: localProgress.percentage }).catch(() => {});
@@ -5340,7 +5867,11 @@ async function init() {
     // Only allow saves after the initial position (local or synced) is fully displayed
     console.log('[pos] isReady=true, currentCfi:', currentCfi.slice(0,60));
     isReady = true;
-    openCfi = currentCfi; // snapshot position-on-open for change detection
+    openCfi = currentCfi;      // snapshot position-on-open for change detection
+    lastSyncedCfi = currentCfi; // server already knows this position — no immediate remote push needed
+    cancelDebouncedSync();
+    startPeriodicSync();
+    void initBattery();
         // Load bookmarks and annotations for this book (non-blocking)
     void loadBookmarks(currentBook.id);
     void loadAnnotations(currentBook.id);
@@ -5365,8 +5896,13 @@ init();
 // Re-render settings panel content when language changes
 document.addEventListener('langchange', () => {
   applyTranslations();
+  syncSettingsUi();
   syncFullscreenButton();
   renderSbItems();
   renderDictSettings();
   populateSbFontSelect();
+  const chip = document.getElementById('dict-lookup-chip');
+  if (chip && !chip.classList.contains('hidden')) {
+    chip.textContent = dictChipLabel();
+  }
 });
