@@ -196,7 +196,7 @@
   "reader.sb_skip_close": "Do not save on close",
   "reader.sb_skip_close_hint": "If enabled, position is not saved automatically when returning to library or closing the tab",
   "reader.sb_save_on_hide": "Save on tablet lock / app switch",
-  "reader.sb_save_on_hide_hint": "Push reading position to the server when the screen locks or you switch away.",
+  "reader.sb_save_on_hide_hint": "Push reading position to the server when the screen locks or you switch away. Progress also syncs automatically every 60 seconds while reading.",
   "reader.sb_hyphenation": "Word hyphenation",
   "reader.sb_hyphenation_hint": "Automatically hyphenate words at line breaks",
   "reader.sb_bionic": "Bionic reading",
@@ -516,5 +516,10 @@
   "reader.upload_fonts": "Upload fonts…",
   "reader.upload_dict": "Upload dictionary ZIP…",
   "reader.uploading": "Uploading",
+  "reader.btn_sync": "Sync progress",
+  "reader.sync_back_title": "Sync to earlier position?",
+  "reader.sync_back_body": "Your current position is {cur}, but the last synced position was {best}. Syncing will overwrite the higher position on all devices.",
+  "reader.sync_back_cancel": "Cancel",
+  "reader.sync_back_confirm": "Sync to {cur}",
   "reader.sb_battery": "Battery"
 }

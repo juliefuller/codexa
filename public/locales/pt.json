@@ -196,7 +196,7 @@
   "reader.sb_skip_close": "Não guardar ao fechar",
   "reader.sb_skip_close_hint": "Se ativado, a posição não será guardada ao sair",
   "reader.sb_save_on_hide": "Guardar ao bloquear ecrã / mudar de app",
-  "reader.sb_save_on_hide_hint": "Envia a posição ao servidor quando o ecrã bloqueia ou muda de aplicação",
+  "reader.sb_save_on_hide_hint": "Envia a posição ao servidor quando o ecrã bloqueia ou muda de aplicação. Também sincroniza automaticamente a cada 60 segundos durante a leitura.",
   "reader.sb_hyphenation": "Hifenização",
   "reader.sb_hyphenation_hint": "Quebra automática de palavras ao fim da linha",
   "reader.sb_bionic": "Leitura biónica",
@@ -511,5 +511,10 @@
   "reader.upload_fonts": "Carregar fontes…",
   "reader.upload_dict": "Carregar dicionário ZIP…",
   "reader.uploading": "Carregando",
+  "reader.btn_sync": "Sincronizar progresso",
+  "reader.sync_back_title": "Sincronizar para posição anterior?",
+  "reader.sync_back_body": "A sua posição atual é {cur}, mas a última sincronizada foi {best}. Sincronizar irá substituir a posição mais avançada em todos os dispositivos.",
+  "reader.sync_back_cancel": "Cancelar",
+  "reader.sync_back_confirm": "Sincronizar para {cur}",
   "reader.sb_battery": "Bateria"
 }

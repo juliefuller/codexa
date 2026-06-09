@@ -196,7 +196,7 @@
   "reader.sb_skip_close": "Beim Schließen nicht speichern",
   "reader.sb_skip_close_hint": "Falls aktiviert, wird die Position beim Verlassen nicht automatisch gespeichert",
   "reader.sb_save_on_hide": "Bei Bildschirmsperre / App-Wechsel speichern",
-  "reader.sb_save_on_hide_hint": "Lesezeiger senden, wenn der Bildschirm gesperrt wird oder Sie die App wechseln",
+  "reader.sb_save_on_hide_hint": "Lesezeiger senden, wenn der Bildschirm gesperrt wird oder Sie die App wechseln. Während des Lesens wird außerdem alle 60 Sekunden synchronisiert.",
   "reader.sb_hyphenation": "Silbentrennung",
   "reader.sb_hyphenation_hint": "Automatische Worttrennung an Zeilenumbrüchen",
   "reader.sb_bionic": "Bionisches Lesen",
@@ -511,5 +511,10 @@
   "reader.upload_fonts": "Schriften hochladen…",
   "reader.upload_dict": "Wörterbuch ZIP hochladen…",
   "reader.uploading": "Hochladen",
+  "reader.btn_sync": "Fortschritt synchronisieren",
+  "reader.sync_back_title": "Zur früheren Position synchronisieren?",
+  "reader.sync_back_body": "Ihre aktuelle Position ist {cur}, die letzte synchronisierte war {best}. Beim Synchronisieren wird die höhere Position auf allen Geräten überschrieben.",
+  "reader.sync_back_cancel": "Abbrechen",
+  "reader.sync_back_confirm": "Auf {cur} synchronisieren",
   "reader.sb_battery": "Akku"
 }

@@ -298,6 +298,28 @@ let _clearHlTimer = null;
 let statsSessionId = null;            // active reading_sessions.id
 let sessionPageCount = 0;             // page navigation events in current session
 
+// ── Fork sync policy (juliefuller fork; extends upstream thehijacker/codexa) ──
+// Upstream syncs KOReader progress only on chapter boundaries and book close.
+// This fork adds e-ink / BookOrbit-friendly sync so cross-device position stays
+// fresh without cover-close or pagehide beacons (unreliable on Boox; intentionally omitted).
+//
+// Layers (all no-op when isPeekMode — peek skips progress saves entirely):
+//   1. Chapter boundary — inherited from upstream (saveProgress on spine href change)
+//   2. Debounced (60s)  — fires after last page turn; scheduleDebouncedSync on relocated
+//   3. Periodic (4 min) — heartbeat while reading within one chapter; uses inSession
+//   4. Manual sync btn  — force push; confirms if position is behind bestKnownRemotePct
+//   5. Close / leave    — saveProgressBackground (local + kosync when forward of high-water)
+//
+// Guards (not in upstream):
+//   lastSyncedCfi      — skip kosync when CFI unchanged since last successful push
+//   bestKnownRemotePct — never push backwards unless user confirms manual sync (forced)
+const SYNC_DEBOUNCE_MS   = 60000;    // inactivity debounce — resets on every page turn
+const SYNC_INTERVAL_MS   = 240000;   // 4-minute heartbeat — always fires regardless of activity
+let syncDebounceTimer  = null;
+let syncIntervalTimer  = null;
+let lastSyncedCfi      = '';           // CFI at last successful remote push — used to skip duplicate syncs
+let bestKnownRemotePct = 0;            // high-water mark from all sources — kosync is never pushed below this
+
 // ── Status bar state ──────────────────────────────────────────────────────────
 let currentHref      = '';    // current spine href (updated in updateProgress)
 let currentChapPage  = 0;     // current page within chapter (left page in two-page mode)
@@ -2674,6 +2696,8 @@ async function returnToLibrary() {
   loadingOverlay.classList.remove('hidden');
 
   clearInterruptedSession();
+  cancelDebouncedSync();
+  stopPeriodicSync();
   if (!prefs.skipSaveOnClose) {
     await saveProgress(); // await so updated_at is committed before library reloads
   }
@@ -3972,6 +3996,7 @@ function updateProgress(location) {
       forceRemote: !alreadySent && !bookmarkPending,
       allowRemote: !alreadySent && !bookmarkPending,
     });
+    cancelDebouncedSync();
     writeInterruptedSession();
     if (!alreadySent && !bookmarkPending) {
       lastSentChapterHref = href;
@@ -3985,6 +4010,7 @@ function updateProgress(location) {
 
   // Status bar overlays (replacing old page info overlays)
   if (isReady) lastLocation = location;
+  if (isReady && currentBook && (cfi || pct > 0)) scheduleDebouncedSync();
   trackReadingSpeed();
   updateStatusBar(location);
   scheduleBionicPrefetchAround(location);
@@ -4125,11 +4151,26 @@ function pushRemoteProgress(docKey, xpointer, pct) {
   }).catch(() => {});
 }
 
-function pushInternalProgress(docKey, xpointer, pct) {
-  return apiFetch(`/kosync/internal/${encodeURIComponent(docKey)}`, {
+function pushInternalProgress(docKey, xpointer, pct, force = false) {
+  const qs = force ? '?force=1' : '';
+  return apiFetch(`/kosync/internal/${encodeURIComponent(docKey)}${qs}`, {
     method: 'PUT',
     body: JSON.stringify({ progress: xpointer, percentage: pct, device: 'web', device_id: 'codexa-web' }),
   }).catch(() => {});
+}
+
+function cancelDebouncedSync() {
+  if (syncDebounceTimer) {
+    clearTimeout(syncDebounceTimer);
+    syncDebounceTimer = null;
+  }
+}
+
+function stopPeriodicSync() {
+  if (syncIntervalTimer) {
+    clearInterval(syncIntervalTimer);
+    syncIntervalTimer = null;
+  }
 }
 
 // Initialise the Battery Status API once. Triggers a status-bar refresh on any change.
@@ -4145,7 +4186,27 @@ async function initBattery() {
   } catch { /* not available */ }
 }
 
-async function saveProgress({ forceRemote = false, allowRemote = true } = {}) {
+function startPeriodicSync() {
+  stopPeriodicSync();
+  syncIntervalTimer = setInterval(() => {
+    if (!isReady || !currentBook) return;
+    console.log('[kosync] periodic sync (4 min)');
+    void saveProgress({ forceRemote: true, inSession: true });
+  }, SYNC_INTERVAL_MS);
+}
+
+function scheduleDebouncedSync() {
+  if (!isReady || !currentBook) return;
+  cancelDebouncedSync();
+  syncDebounceTimer = setTimeout(() => {
+    syncDebounceTimer = null;
+    if (!isReady || !currentBook) return;
+    console.log('[kosync] debounced sync (60s inactivity)');
+    void saveProgress({ forceRemote: true, inSession: true });
+  }, SYNC_DEBOUNCE_MS);
+}
+
+async function saveProgress({ forceRemote = false, allowRemote = true, inSession = false, forced = false } = {}) {
   if (!currentBook || !isReady) return;
   if (isPeekMode) return;
   const cfi = currentCfi || '';
@@ -4154,29 +4215,46 @@ async function saveProgress({ forceRemote = false, allowRemote = true } = {}) {
   console.log('[pos] SAVE cfi:', cfi.slice(0,60), 'pct:', (pct*100).toFixed(2)+'%');
   const docKey = externalDocKey();
   const posChanged = cfi !== openCfi;
-  const shouldPushRemote = pct > 0 && !prefs.skipSaveOnClose && !isPeekMode && (forceRemote || (allowRemote && posChanged));
-  console.log('[kosync] saveProgress docKey:', docKey, 'cfi:', cfi.slice(0, 40), 'pct:', Math.round(pct * 100) + '%', shouldPushRemote ? '' : '(no remote push)');
-  const progressPayload = { cfi_position: cfi, percentage: pct, device: 'web' };
+  // Skip remote push when position hasn't moved since the last successful remote sync.
+  // `forced` bypasses this — used for the manual sync button so the user can always re-push
+  // even if lastSyncedCfi matches (e.g. another device overwrote the server behind our back).
+  const alreadySynced = !forced && cfi !== '' && cfi === lastSyncedCfi;
+  const shouldPushRemote = !alreadySynced && pct > 0 && (inSession || !prefs.skipSaveOnClose) && (forceRemote || (allowRemote && posChanged));
+  // Never push to cross-device kosync if it would overwrite a higher known position.
+  // `forced` (manual sync with user confirmation) is allowed to push backwards.
+  const wouldGoBackwards = !forced && pct < bestKnownRemotePct - 0.005;
+  const shouldPushKosync = shouldPushRemote && !wouldGoBackwards;
+  if (wouldGoBackwards && shouldPushRemote) {
+    console.log('[kosync] saveProgress: skipping kosync push — would go backwards:', Math.round(pct * 100) + '% < known best ' + Math.round(bestKnownRemotePct * 100) + '%');
+  }
+  console.log('[kosync] saveProgress docKey:', docKey, 'cfi:', cfi.slice(0, 40), 'pct:', Math.round(pct * 100) + '%', shouldPushKosync ? '' : (alreadySynced ? '(already synced)' : wouldGoBackwards ? '(would go backwards)' : '(no remote push)'));
+  // When force-pushing backwards the server needs force:true to bypass its own high-water mark
+  const progressPayload = { cfi_position: cfi, percentage: pct, device: 'web', ...(forced ? { force: true } : {}) };
   const saves = [
     apiFetch(`/progress/${currentBook.file_hash}`, {
       method: 'PUT',
       body: JSON.stringify(progressPayload),
     }).then(() => {
       if (pct > 0) {
-        try { localStorage.setItem(`br_progress_${currentBook.file_hash}`, JSON.stringify(progressPayload)); } catch { /* ignore */ }
+        const cachePayload = { cfi_position: cfi, percentage: pct, device: 'web' };
+        try { localStorage.setItem(`br_progress_${currentBook.file_hash}`, JSON.stringify(cachePayload)); } catch { /* ignore */ }
       }
     }).catch(() => {}),
   ];
-  if (shouldPushRemote) {
+  if (shouldPushKosync) {
     saves.push(pushRemoteProgress(docKey, koReaderXPointer(), pct));
-    saves.push(pushInternalProgress(docKey, koReaderXPointer(), pct));
+    saves.push(pushInternalProgress(docKey, koReaderXPointer(), pct, forced));
   }
   await Promise.allSettled(saves);
+  if (shouldPushKosync) {
+    lastSyncedCfi = cfi; // record what we just synced
+    bestKnownRemotePct = pct; // update high-water mark (may go down if user confirmed backwards)
+  }
 }
 
 // Fire-and-forget version used when navigating away — uses keepalive:true so
 // the browser keeps the requests alive even after the page unloads.
-function saveProgressBackground() {
+function saveProgressBackground({ inSession = false } = {}) {
   if (!currentBook || !isReady) return;
   if (isPeekMode) return;
   const cfi = currentCfi || '';
@@ -4190,14 +4268,16 @@ function saveProgressBackground() {
   const opts = (body) => ({ method: 'PUT', headers, body: JSON.stringify(body), keepalive: true });
   const docKey = externalDocKey();
   const xp     = koReaderXPointer();
-  const posChanged = cfi !== openCfi;
+  const posChanged    = cfi !== openCfi;
+  const alreadySynced = cfi !== '' && cfi === lastSyncedCfi;
   fetch(`/api/progress/${currentBook.file_hash}`, opts({ cfi_position: cfi, percentage: pct, device: 'web' })).catch(() => {});
   if (pct > 0) {
     try { localStorage.setItem(`br_progress_${currentBook.file_hash}`, JSON.stringify({ cfi_position: cfi, percentage: pct, device: 'web' })); } catch { /* ignore */ }
   }
-  if (pct > 0 && !prefs.skipSaveOnClose && !isPeekMode && posChanged) {
+  if (!alreadySynced && pct > 0 && (inSession || !prefs.skipSaveOnClose) && (posChanged || inSession) && pct >= bestKnownRemotePct - 0.005) {
     fetch(`/api/kosync/remote/${encodeURIComponent(docKey)}`,   opts({ document: docKey, progress: xp, percentage: pct, device: 'web', device_id: 'codexa-web' })).catch(() => {});
     fetch(`/api/kosync/internal/${encodeURIComponent(docKey)}`, opts({ progress: xp, percentage: pct, device: 'web', device_id: 'codexa-web' })).catch(() => {});
+    if (pct > bestKnownRemotePct) bestKnownRemotePct = pct;
   }
 }
 
@@ -4285,6 +4365,13 @@ async function syncOnOpen(localProgress) {
   const bestTime  = best.timestamp             || 0;
   console.log('[kosync] best:', best.device, Math.round((best.percentage||0)*100)+'%', 'ts:', bestTime, 'localTime:', localTime);
 
+  // Always advance the high-water mark; ensures we never push backwards later
+  const remoteHighWater = Math.max(localPct, best.percentage || 0);
+  if (remoteHighWater > bestKnownRemotePct) {
+    bestKnownRemotePct = remoteHighWater;
+    console.log('[kosync] bestKnownRemotePct →', Math.round(bestKnownRemotePct * 100) + '%');
+  }
+
   // If the remote xpointer exactly matches our last-pushed xpointer, both readers
   // are at the same paragraph — skip the dialog even if percentages differ (they
   // are on different scales and the mismatch is expected, not a real position gap).
@@ -4309,10 +4396,48 @@ async function syncOnOpen(localProgress) {
   return null;
 }
 
+// Called by the Android app when the network becomes available (wake from standby /
+// reconnect). Re-runs the same sync-on-open flow so the reader can jump to a position
+// advanced on another device while this one was offline / sleeping.
+async function networkRestoreSync() {
+  if (!currentBook || !isReady) return;
+  try {
+    const localProgress = await apiFetch(`/progress/${currentBook.file_hash}`).catch(() => null);
+    const syncTarget = await syncOnOpen(localProgress);
+    if (!syncTarget?.percentage != null && !syncTarget?.progress) return;
+    // Reuse the same navigation logic used at book-open time
+    const dfMatch = syncTarget.progress?.match(/^\/body\/DocFragment\[(\d+)\]/);
+    if (dfMatch) {
+      const spineIdx  = parseInt(dfMatch[1]) - 1;
+      const spineItem = book.spine.get(spineIdx);
+      if (spineItem?.href) {
+        const paraMatch = !prefs.bionicReading && syncTarget.progress.match(/\/p\[(\d+)\]/);
+        let navigated = false;
+        if (paraMatch) {
+          const guessCfi = `epubcfi(/6/${(spineIdx + 1) * 2}!/4/${parseInt(paraMatch[1]) * 2})`;
+          try { await rendition.display(guessCfi); navigated = true; } catch { navigated = false; }
+        }
+        if (!navigated) {
+          await rendition.display(spineItem.href);
+          if (prefs.bionicReading && book.locations.length() > 0)
+            await seekToPercentage(syncTarget.percentage);
+        }
+      } else if (book.locations.length() > 0) {
+        await seekToPercentage(syncTarget.percentage);
+      }
+    } else if (syncTarget?.percentage != null) {
+      if (book.locations.length() > 0)
+        await seekToPercentage(syncTarget.percentage);
+    }
+  } catch (e) { console.warn('[kosync] networkRestoreSync failed:', e.message); }
+}
+window.__codexaNetworkRestore = networkRestoreSync;
+
 window.addEventListener('online', () => {
   if (!currentBook) return;
   syncOfflineBookmarks(currentBook.id).catch(() => {});
   syncOfflineAnnotations(currentBook.id).catch(() => {});
+  networkRestoreSync().catch(() => {});
 });
 
 
@@ -5239,6 +5364,54 @@ document.getElementById('btn-annotation-accept').addEventListener('click', () =>
   if (prefs.autoHideHeader) forceHideAutoHeader();
   void saveProgress({ forceRemote: true });
 });
+// Manual sync button — always force-pushes the current position.
+// If the current position is behind the last known high-water mark, asks for confirmation
+// (so accidental forward jumps can be corrected) before overwriting.
+document.getElementById('btn-sync')?.addEventListener('click', async () => {
+  const btn = document.getElementById('btn-sync');
+  if (!isReady || !currentBook || btn.disabled) return;
+  const pct = currentPct > 0 ? currentPct : lastKnownGoodPct;
+  const isBackwards = pct > 0 && pct < bestKnownRemotePct - 0.005;
+  if (isBackwards) {
+    const curPctStr  = Math.round(pct * 100) + '%';
+    const bestPctStr = Math.round(bestKnownRemotePct * 100) + '%';
+    const ok = await new Promise(resolve => {
+      const bd = document.createElement('div');
+      bd.className = 'modal-backdrop';
+      bd.innerHTML = `
+        <div class="modal" role="dialog" aria-modal="true" style="max-width:420px">
+          <h3 style="margin:0 0 .75rem;font-size:1rem;font-weight:600">${t('reader.sync_back_title')}</h3>
+          <p style="margin:0 0 1.5rem;font-size:.85rem;line-height:1.5">
+            ${t('reader.sync_back_body', { cur: curPctStr, best: bestPctStr })}
+          </p>
+          <div class="modal-footer">
+            <button class="btn btn-secondary" id="sync-back-cancel">${t('reader.sync_back_cancel')}</button>
+            <button class="btn btn-primary"   id="sync-back-ok">${t('reader.sync_back_confirm', { cur: curPctStr })}</button>
+          </div>
+        </div>`;
+      document.body.appendChild(bd);
+      const close = v => { bd.remove(); resolve(v); };
+      bd.querySelector('#sync-back-ok').addEventListener('click',     () => close(true));
+      bd.querySelector('#sync-back-cancel').addEventListener('click', () => close(false));
+      bd.addEventListener('click', e => { if (e.target === bd) close(false); });
+    });
+    if (!ok) return;
+    // User confirmed — reset the high-water mark to the current position
+    bestKnownRemotePct = pct;
+  }
+  btn.classList.add('btn-sync-busy');
+  btn.disabled = true;
+  try {
+    await saveProgress({ forceRemote: true, inSession: true, forced: true });
+    cancelDebouncedSync();
+  } finally {
+    btn.disabled = false;
+    btn.classList.remove('btn-sync-busy');
+    btn.classList.add('btn-sync-done');
+    setTimeout(() => btn.classList.remove('btn-sync-done'), 1500);
+  }
+});
+
 document.getElementById('btn-jump-pct').addEventListener('click', () => {
   if (isJumpPanelOpen()) closeJumpPanel();
   else openJumpPanel();
@@ -5348,6 +5521,8 @@ window.addEventListener('beforeunload', () => {
   if (isPeekMode && currentBook) {
     try { sessionStorage.setItem('br_last_peek_book_id', String(currentBook.id)); } catch { /* ignore */ }
   }
+  cancelDebouncedSync();
+  stopPeriodicSync();
   if (!prefs.skipSaveOnClose) saveProgressBackground();
   endStatsSessionBackground();
 });
@@ -5511,6 +5686,8 @@ async function init() {
       console.log('[reader] localProgress:', localProgress?.cfi_position?.slice(0, 60), 'pct:', localProgress?.percentage);
       if (localProgress?.percentage > 0) {
         lastKnownGoodPct = localProgress.percentage;
+        // Seed the high-water mark so we never push below what the server already has
+        if (localProgress.percentage > bestKnownRemotePct) bestKnownRemotePct = localProgress.percentage;
         // Keep the offline metadata in sync so "Currently Reading" is correct offline
         getBookMeta(Number(bookId)).then(meta => {
           if (meta) saveBookMeta({ ...meta, percentage: localProgress.percentage }).catch(() => {});
@@ -5662,6 +5839,9 @@ async function init() {
     console.log('[pos] isReady=true, currentCfi:', currentCfi.slice(0,60));
     isReady = true;
     openCfi = currentCfi;      // snapshot position-on-open for change detection
+    lastSyncedCfi = currentCfi; // server already knows this position — no immediate remote push needed
+    cancelDebouncedSync();
+    startPeriodicSync();
     void initBattery();
         // Load bookmarks and annotations for this book (non-blocking)
     void loadBookmarks(currentBook.id);
