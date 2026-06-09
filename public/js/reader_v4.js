@@ -4,7 +4,7 @@ import { t, initI18n, applyTranslations, getCurrentLang } from './i18n.js';
 import ePub from './flow/index.js';
 import { isBookDownloaded, downloadBook, fetchOfflineBookFile, getBookMeta, saveBookMeta } from './offline.js';
 
-const READER_BUILD = 'br-v47';
+const READER_BUILD = 'br-v48';
 const _i18nReady = initI18n();
 console.log('[codexa] reader build', READER_BUILD);
 
@@ -1914,7 +1914,7 @@ function openAnnotations() {
   settingsPanel.classList.remove('open');
   bookmarksSidebar.classList.remove('open');
   panelBackdrop.classList.add('visible');
-  if (prefs.autoHideHeader) readerLayout.classList.remove('header-peek');
+  if (prefs.autoHideHeader) forceHideAutoHeader();
 }
 
 // ── Status bar engine ─────────────────────────────────────────────────────────
@@ -2300,11 +2300,28 @@ function buildChapterMarkers() {
 let _headerRevealTs = 0;
 const HEADER_REVEAL_GUARD_MS = 350; // must be ≥ the 250ms transition
 
+function syncHeaderDismissBackdrop() {
+  if (!headerDismissBackdrop) return;
+  const show = prefs.autoHideHeader
+    && readerLayout.classList.contains('header-peek')
+    && !isJumpPanelOpen()
+    && !tocSidebar.classList.contains('open');
+  headerDismissBackdrop.classList.toggle('visible', show);
+}
+
+function forceHideAutoHeader() {
+  if (!readerLayout.classList.contains('header-peek')) return;
+  isMouseOverHeader = false;
+  readerLayout.classList.remove('header-peek');
+  syncHeaderDismissBackdrop();
+}
+
 function revealHeader() {
   if (!readerLayout.classList.contains('header-peek')) {
     _headerRevealTs = Date.now(); // record reveal time for click-guard
   }
   readerLayout.classList.add('header-peek');
+  syncHeaderDismissBackdrop();
 }
 
 function hideAutoHeader() {
@@ -2312,13 +2329,13 @@ function hideAutoHeader() {
   if (!readerLayout.classList.contains('header-peek')) return;
   if (tocSidebar.classList.contains('open') || isJumpPanelOpen()) return;
   if (isMouseOverHeader) return;
-  readerLayout.classList.remove('header-peek');
+  forceHideAutoHeader();
 }
 
 function applyAutoHide() {
   readerLayout.classList.toggle('autohide-header', prefs.autoHideHeader);
   if (!prefs.autoHideHeader) {
-    readerLayout.classList.remove('header-peek');
+    forceHideAutoHeader();
   }
   // Resize rendition since available height changes
   if (rendition) {
@@ -2364,11 +2381,15 @@ document.querySelector('.reader-header').addEventListener('mouseleave', () => {
   isMouseOverHeader = false;
   hideAutoHeader();
 });
-headerDismissBackdrop?.addEventListener('click', hideAutoHeader);
-headerDismissBackdrop?.addEventListener('touchend', (e) => {
+function onHeaderDismissBackdrop(e) {
+  if (!prefs.autoHideHeader || !readerLayout.classList.contains('header-peek')) return;
   e.preventDefault();
-  hideAutoHeader();
-}, { passive: false });
+  e.stopPropagation();
+  forceHideAutoHeader();
+}
+headerDismissBackdrop?.addEventListener('pointerdown', onHeaderDismissBackdrop);
+headerDismissBackdrop?.addEventListener('touchstart', onHeaderDismissBackdrop, { passive: false });
+headerDismissBackdrop?.addEventListener('click', onHeaderDismissBackdrop);
 
 // ── TOC ───────────────────────────────────────────────────────────────────────
 function buildTocRecursive(toc, depth, fragment) {
@@ -2567,7 +2588,7 @@ function openToc() {
   tocSidebar.classList.add('open');
   settingsPanel.classList.remove('open');
   panelBackdrop.classList.add('visible');
-  if (prefs.autoHideHeader) readerLayout.classList.remove('header-peek');
+  if (prefs.autoHideHeader) forceHideAutoHeader();
   // Fallback recenter after slide-in in case TOC updates while opening.
   setTimeout(() => {
     centerActiveTocItem();
@@ -2589,7 +2610,7 @@ function openSettings() {
   tocSidebar.classList.remove('open');
   bookmarksSidebar.classList.remove('open');
   panelBackdrop.classList.add('visible');
-  if (prefs.autoHideHeader) readerLayout.classList.remove('header-peek');
+  if (prefs.autoHideHeader) forceHideAutoHeader();
   activateSettingsTab(localStorage.getItem('settingsTab') || 'theme');
   renderDictSettings();
 }
@@ -2598,7 +2619,7 @@ function openBookmarks() {
   tocSidebar.classList.remove('open');
   settingsPanel.classList.remove('open');
   panelBackdrop.classList.add('visible');
-  if (prefs.autoHideHeader) readerLayout.classList.remove('header-peek');
+  if (prefs.autoHideHeader) forceHideAutoHeader();
 }
 function isJumpPanelOpen() {
   return jumpPctPanel && jumpPctPanel.style.display !== 'none';
@@ -2612,7 +2633,10 @@ function openJumpPanel() {
   jumpPctPanel.style.display = '';
   jumpPctBackdrop?.classList.add('visible');
   jumpPctBackdrop?.removeAttribute('hidden');
-  if (prefs.autoHideHeader) readerLayout.classList.add('header-peek');
+  if (prefs.autoHideHeader) {
+    readerLayout.classList.add('header-peek');
+    syncHeaderDismissBackdrop();
+  }
 }
 
 function closeJumpPanel() {
@@ -2623,7 +2647,9 @@ function closeJumpPanel() {
   jumpPctValue?.blur();
   // Re-evaluate auto-hide: hide header unless something else is keeping it open
   if (prefs.autoHideHeader && !tocSidebar.classList.contains('open') && !bookmarksSidebar.classList.contains('open') && !isMouseOverHeader) {
-    readerLayout.classList.remove('header-peek');
+    forceHideAutoHeader();
+  } else {
+    syncHeaderDismissBackdrop();
   }
 }
 function closePanels() {
@@ -2638,7 +2664,7 @@ function closePanels() {
   panelBackdrop.classList.remove('visible');
   closeJumpPanel();
   if (searchHadFocus && typeof activeEl.blur === 'function') activeEl.blur();
-  if (prefs.autoHideHeader) readerLayout.classList.remove('header-peek');
+  if (prefs.autoHideHeader) forceHideAutoHeader();
 }
 
 function hasOpenPanel() {
@@ -2712,7 +2738,7 @@ function openSearch() {
   tocSidebar.classList.remove('open');
   settingsPanel.classList.remove('open');
   panelBackdrop.classList.add('visible');
-  if (prefs.autoHideHeader) readerLayout.classList.remove('header-peek');
+  if (prefs.autoHideHeader) forceHideAutoHeader();
   setTimeout(() => searchInput.focus(), 280);
 }
 
@@ -4582,10 +4608,11 @@ function handleTouchEnd(e) {
     const wasHidden = !readerLayout.classList.contains('header-peek');
     if (!readerLayout.classList.toggle('header-peek')) closeJumpPanel();
     else if (wasHidden) _headerRevealTs = Date.now();
+    syncHeaderDismissBackdrop();
     return;
   }
   if (prefs.autoHideHeader && dy < -SWIPE_UP_CLOSE && absDx < 70 && readerLayout.classList.contains('header-peek')) {
-    readerLayout.classList.remove('header-peek');
+    forceHideAutoHeader();
     closeJumpPanel();
     return;
   }
@@ -4598,10 +4625,9 @@ function handleTouchEnd(e) {
     const nav = inNavZone(x);
     if (nav === 'prev') { goPrev(); return; }
     if (nav === 'next') { goNext(); return; }
-    if (prefs.autoHideHeader) {
-      const wasHidden = !readerLayout.classList.contains('header-peek');
-      readerLayout.classList.toggle('header-peek');
-      if (wasHidden && readerLayout.classList.contains('header-peek')) _headerRevealTs = Date.now();
+    if (prefs.autoHideHeader && readerLayout.classList.contains('header-peek')) {
+      forceHideAutoHeader();
+      return;
     }
     return;
   }
@@ -4658,11 +4684,12 @@ function attachIframeTouchNav(view) {
       const wasHidden = !readerLayout.classList.contains('header-peek');
       if (!readerLayout.classList.toggle('header-peek')) closeJumpPanel();
       else if (wasHidden) _headerRevealTs = Date.now();
+      syncHeaderDismissBackdrop();
       return;
     }
     if (prefs.autoHideHeader && dy < -SWIPE_UP_CLOSE && absDx < 70 && readerLayout.classList.contains('header-peek')) {
       if (e.cancelable) e.preventDefault();
-      readerLayout.classList.remove('header-peek');
+      forceHideAutoHeader();
       closeJumpPanel();
       return;
     }
@@ -4676,7 +4703,12 @@ function attachIframeTouchNav(view) {
       if (nav) {
         if (e.cancelable) e.preventDefault();
         if (nav === 'prev') goPrev(); else goNext();
+        if (prefs.autoHideHeader && readerLayout.classList.contains('header-peek')) forceHideAutoHeader();
         return;
+      }
+      if (prefs.autoHideHeader && readerLayout.classList.contains('header-peek')) {
+        if (e.cancelable) e.preventDefault();
+        forceHideAutoHeader();
       }
       return;
     }
@@ -5271,7 +5303,7 @@ document.getElementById('btn-search-back').addEventListener('click', async () =>
   preSearchCfi = null;
   searchBackBtn.style.display   = 'none';
   searchAcceptBtn.style.display = 'none';
-  if (prefs.autoHideHeader) readerLayout.classList.remove('header-peek');
+  if (prefs.autoHideHeader) forceHideAutoHeader();
   await rendition.display(cfi);
 });
 document.getElementById('btn-search-accept').addEventListener('click', () => {
@@ -5279,7 +5311,7 @@ document.getElementById('btn-search-accept').addEventListener('click', () => {
   preSearchCfi = null;
   searchBackBtn.style.display   = 'none';
   searchAcceptBtn.style.display = 'none';
-  if (prefs.autoHideHeader) readerLayout.classList.remove('header-peek');
+  if (prefs.autoHideHeader) forceHideAutoHeader();
 });
 // Bookmark navigation back/accept — same pattern as search
 document.getElementById('btn-bookmark-back').addEventListener('click', async () => {
@@ -5288,14 +5320,14 @@ document.getElementById('btn-bookmark-back').addEventListener('click', async () 
   preBookmarkCfi = null;
   bookmarkBackBtn.style.display   = 'none';
   bookmarkAcceptBtn.style.display = 'none';
-  if (prefs.autoHideHeader) readerLayout.classList.remove('header-peek');
+  if (prefs.autoHideHeader) forceHideAutoHeader();
   await rendition.display(cfi);
 });
 document.getElementById('btn-bookmark-accept').addEventListener('click', () => {
   preBookmarkCfi = null;
   bookmarkBackBtn.style.display   = 'none';
   bookmarkAcceptBtn.style.display = 'none';
-  if (prefs.autoHideHeader) readerLayout.classList.remove('header-peek');
+  if (prefs.autoHideHeader) forceHideAutoHeader();
   // Now that the user accepted the position, push progress normally
   void saveProgress({ forceRemote: true });
 });
@@ -5305,14 +5337,14 @@ document.getElementById('btn-annotation-back').addEventListener('click', async (
   preAnnotationCfi = null;
   annotationBackBtn.style.display   = 'none';
   annotationAcceptBtn.style.display = 'none';
-  if (prefs.autoHideHeader) readerLayout.classList.remove('header-peek');
+  if (prefs.autoHideHeader) forceHideAutoHeader();
   await rendition.display(cfi);
 });
 document.getElementById('btn-annotation-accept').addEventListener('click', () => {
   preAnnotationCfi = null;
   annotationBackBtn.style.display   = 'none';
   annotationAcceptBtn.style.display = 'none';
-  if (prefs.autoHideHeader) readerLayout.classList.remove('header-peek');
+  if (prefs.autoHideHeader) forceHideAutoHeader();
   void saveProgress({ forceRemote: true });
 });
 // Manual sync button — always force-pushes the current position.

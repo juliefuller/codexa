@@ -73,6 +73,7 @@ html, body {
   transform: translateY(0);
   opacity: 1;
   pointer-events: auto;
+  z-index: 21;
 }
 /* Reader main fills full height when header is out of flow */
 .reader-layout.autohide-header .reader-main {
@@ -1502,13 +1503,13 @@ input[type="range"]::-moz-range-thumb {
   display: none;
   position: fixed;
   inset: 0;
-  z-index: 19;
+  z-index: 20;
   background: transparent;
   pointer-events: auto;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
 }
-.autohide-header.header-peek .header-dismiss-backdrop {
-  display: block;
-}
+.header-dismiss-backdrop.visible { display: block; }
 
 .jump-pct-backdrop {
   display: none;
