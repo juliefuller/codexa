@@ -26,6 +26,7 @@ if (!requireAuth()) throw new Error('not authenticated');
 const params = new URLSearchParams(window.location.search);
 const bookId = params.get('id');
 if (!bookId) { window.location.href = '/'; throw new Error(); }
+const isPeekMode = params.get('peek') === '1';
 const BIONIC_RELOAD_KEY = 'br_bionic_reload_state_v1';
 const SESSION_KEY = 'br_interrupted_session_v1';
 const RESUME_STATE_KEY = 'br_resume_state_v1';
@@ -3836,13 +3837,14 @@ function pushInternalProgress(docKey, xpointer, pct) {
 
 async function saveProgress({ forceRemote = false, allowRemote = true } = {}) {
   if (!currentBook || !isReady) return;
+  if (isPeekMode) return;
   const cfi = currentCfi || '';
   const pct = currentPct > 0 ? currentPct : lastKnownGoodPct;
   if (!cfi && pct === 0) return;
   console.log('[pos] SAVE cfi:', cfi.slice(0,60), 'pct:', (pct*100).toFixed(2)+'%');
   const docKey = externalDocKey();
   const posChanged = cfi !== openCfi;
-  const shouldPushRemote = pct > 0 && !prefs.skipSaveOnClose && (forceRemote || (allowRemote && posChanged));
+  const shouldPushRemote = pct > 0 && !prefs.skipSaveOnClose && !isPeekMode && (forceRemote || (allowRemote && posChanged));
   console.log('[kosync] saveProgress docKey:', docKey, 'cfi:', cfi.slice(0, 40), 'pct:', Math.round(pct * 100) + '%', shouldPushRemote ? '' : '(no remote push)');
   const progressPayload = { cfi_position: cfi, percentage: pct, device: 'web' };
   const saves = [
@@ -3866,6 +3868,7 @@ async function saveProgress({ forceRemote = false, allowRemote = true } = {}) {
 // the browser keeps the requests alive even after the page unloads.
 function saveProgressBackground() {
   if (!currentBook || !isReady) return;
+  if (isPeekMode) return;
   const cfi = currentCfi || '';
   const pct = currentPct > 0 ? currentPct : lastKnownGoodPct;
   if (!cfi && pct === 0) return;
@@ -3882,7 +3885,7 @@ function saveProgressBackground() {
   if (pct > 0) {
     try { localStorage.setItem(`br_progress_${currentBook.file_hash}`, JSON.stringify({ cfi_position: cfi, percentage: pct, device: 'web' })); } catch { /* ignore */ }
   }
-  if (pct > 0 && !prefs.skipSaveOnClose && posChanged) {
+  if (pct > 0 && !prefs.skipSaveOnClose && !isPeekMode && posChanged) {
     fetch(`/api/kosync/remote/${encodeURIComponent(docKey)}`,   opts({ document: docKey, progress: xp, percentage: pct, device: 'web', device_id: 'codexa-web' })).catch(() => {});
     fetch(`/api/kosync/internal/${encodeURIComponent(docKey)}`, opts({ progress: xp, percentage: pct, device: 'web', device_id: 'codexa-web' })).catch(() => {});
   }
@@ -5033,6 +5036,9 @@ document.querySelector('.nav-zone-next')?.addEventListener('touchend', (e) => { 
 document.getElementById('btn-prev').addEventListener('keydown', e => { if (e.key === 'Enter') goPrev(); });
 document.getElementById('btn-next').addEventListener('keydown', e => { if (e.key === 'Enter') goNext(); });
 window.addEventListener('beforeunload', () => {
+  if (isPeekMode && currentBook) {
+    try { sessionStorage.setItem('br_last_peek_book_id', String(currentBook.id)); } catch { /* ignore */ }
+  }
   if (!prefs.skipSaveOnClose) saveProgressBackground();
   endStatsSessionBackground();
 });
@@ -5122,8 +5128,8 @@ async function init() {
     return;
   }
 
-  // Auto-download to offline cache in background after successful file load
-  if (navigator.onLine && currentBook) {
+  // Auto-download to offline cache in background after successful file load (skip in peek mode)
+  if (!isPeekMode && navigator.onLine && currentBook) {
     isBookDownloaded(Number(bookId)).then(cached => {
       if (!cached) downloadBook(currentBook, getToken()).catch(() => {});
     }).catch(() => {});
@@ -5191,9 +5197,11 @@ async function init() {
       if (localProgress?.percentage > 0) {
         lastKnownGoodPct = localProgress.percentage;
         // Keep the offline metadata in sync so "Currently Reading" is correct offline
-        getBookMeta(Number(bookId)).then(meta => {
-          if (meta) saveBookMeta({ ...meta, percentage: localProgress.percentage }).catch(() => {});
-        }).catch(() => {});
+        if (!isPeekMode) {
+          getBookMeta(Number(bookId)).then(meta => {
+            if (meta) saveBookMeta({ ...meta, percentage: localProgress.percentage }).catch(() => {});
+          }).catch(() => {});
+        }
       }
       if (!startCfi && localProgress?.cfi_position) startCfi = localProgress.cfi_position;
       // Pre-load locations from cache so seekToPercentage works immediately after startRendition
@@ -5249,7 +5257,7 @@ async function init() {
     }
 
     // Check remote/internal sync AFTER book is visible
-    const syncTarget = (prefs.skipOpenProgressCheck || skipOpenSync) ? null : await syncOnOpen(localProgress);
+    const syncTarget = (prefs.skipOpenProgressCheck || skipOpenSync || isPeekMode) ? null : await syncOnOpen(localProgress);
     if (syncTarget?.percentage != null) {
       try {
         // Any DocFragment-based xpointer — navigate to the correct spine item directly.
