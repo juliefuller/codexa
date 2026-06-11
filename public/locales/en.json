@@ -525,6 +525,8 @@
   "reader.sync_back_cancel": "Cancel",
   "reader.sync_back_confirm": "Sync to {cur}",
   "reader.sb_battery": "Battery",
+  "reader.sb_chap_num": "Chapter number",
+  "reader.sb_series": "Series",
   "reader.sb_online": "Connection",
   "reader.sb_online_yes": "Online",
   "reader.sb_offline_yes": "Offline"

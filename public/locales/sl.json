@@ -520,6 +520,8 @@
   "reader.sync_back_cancel": "Prekliči",
   "reader.sync_back_confirm": "Sinhroniziraj na {cur}",
   "reader.sb_battery": "Baterija",
+  "reader.sb_chap_num": "Številka poglavja",
+  "reader.sb_series": "Serija",
   "reader.sb_online": "Povezava",
   "reader.sb_online_yes": "Povezan",
   "reader.sb_offline_yes": "Brez povezave"

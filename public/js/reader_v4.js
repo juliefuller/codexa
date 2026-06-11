@@ -197,7 +197,9 @@ function getStatusStats() {
     { id: 'currentTime',   icon: '/images/time.svg',            label: t('reader.sb_current_time') },
     { id: 'bookTitle',     icon: '/images/book_title.svg',      label: t('reader.sb_book_title') },
     { id: 'bookAuthor',    icon: '/images/book_author.svg',     label: t('reader.sb_book_author') },
+    { id: 'series',        icon: '/images/shelf.svg',           label: t('reader.sb_series') },
     { id: 'chapterTitle',  icon: '/images/chapter_title.svg',   label: t('reader.sb_chap_title') },
+    { id: 'chapterNum',    icon: '/images/chapters.svg',        label: t('reader.sb_chap_num') },
     { id: 'battery',       icon: '/images/battery.svg',         label: t('reader.sb_battery') },
     { id: 'online',        icon: '/images/offline.svg',         label: t('reader.sb_online') },
   ];
@@ -2032,6 +2034,16 @@ function computeStatValue(id) {
       return currentBook?.author || '';
     case 'chapterTitle':
       return chapterLabelFromHref(currentHref);
+    case 'chapterNum': {
+      const spineTotal = book?.spine?.spineItems?.length || book?.spine?.length || 0;
+      return spineTotal ? (currentSpineIndex + 1) + '/' + spineTotal : '';
+    }
+    case 'series': {
+      const sname = currentBook?.series_name || '';
+      if (!sname) return '';
+      const snum = currentBook?.series_number;
+      return snum ? sname + ' #' + snum : sname;
+    }
     case 'battery': {
       if (!_batteryMgr) return '';
       return Math.round(_batteryMgr.level * 100) + '%';

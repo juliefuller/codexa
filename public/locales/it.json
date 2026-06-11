@@ -519,6 +519,8 @@
   "reader.sync_back_cancel": "Annulla",
   "reader.sync_back_confirm": "Sincronizza a {cur}",
   "reader.sb_battery": "Batteria",
+  "reader.sb_chap_num": "Numero capitolo",
+  "reader.sb_series": "Serie",
   "reader.sb_online": "Connessione",
   "reader.sb_online_yes": "Online",
   "reader.sb_offline_yes": "Offline"
