@@ -1224,6 +1224,25 @@ export async function initLibrary() {
     applyFilter();
   });
 
+  // Grid density
+  let gridDensity = localStorage.getItem('br_grid_density') || 'normal';
+  function applyGridDensity() {
+    const grid = document.getElementById('book-grid');
+    if (!grid) return;
+    grid.classList.remove('density-compact', 'density-normal', 'density-large');
+    grid.classList.add('density-' + gridDensity);
+    document.querySelectorAll('.density-btn').forEach(b =>
+      b.classList.toggle('active', b.dataset.density === gridDensity));
+  }
+  applyGridDensity();
+  document.querySelectorAll('.density-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      gridDensity = btn.dataset.density;
+      localStorage.setItem('br_grid_density', gridDensity);
+      applyGridDensity();
+    });
+  });
+
   // Edit mode
   document.getElementById('edit-mode-btn').addEventListener('click', () => {
     if (isOfflineMode) return;

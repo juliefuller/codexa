@@ -114,6 +114,7 @@
       <button id="btn-search-accept" class="btn-icon" style="display:none" data-i18n-title="reader.btn_search_accept" title="Sprejmi položaj">✓</button>
       <button id="btn-jump-pct"      class="btn-icon" data-i18n-title="reader.btn_jump_pct"      title="Skoči na odstotek"><img src="/images/percentage.svg" class="nav-icon nav-icon-percentage" alt=""></button>
       <button id="btn-sync"         class="btn-icon" data-i18n-title="reader.btn_sync"         title="Sync progress"><img src="/images/sync.svg" class="nav-icon nav-icon-sync" alt=""></button>
+      <button id="btn-sleep-timer"  class="btn-icon" data-i18n-title="reader.btn_sleep_timer"  title="Sleep timer"><img src="/images/time.svg" class="nav-icon nav-icon-time" alt=""><span id="sleep-timer-badge" class="sleep-timer-badge hidden"></span></button>
       <button id="btn-settings"      class="btn-icon" data-i18n-title="reader.btn_settings"      title="Nastavitve branja"><img src="/images/settings.svg" class="nav-icon nav-icon-settings" alt=""></button>
       <button id="btn-fullscreen"  class="btn-icon" data-i18n-title="reader.btn_fullscreen" title="Celozaslonski način"><img src="/images/fullscreen.svg" class="nav-icon nav-icon-fullscreen" alt=""></button>
       <button id="btn-back"        class="btn-icon" data-i18n-title="reader.btn_back"       title="Nazaj v knjižnico"><img src="/images/back.svg" class="nav-icon nav-icon-back" alt=""></button>
@@ -134,6 +135,31 @@
       </div>
       <button id="btn-next-chap" class="sb-chap-nav-btn" data-i18n-title="reader.next_chapter" title="Naslednje poglavje">›</button>
     </div>
+
+    <!-- Sleep timer backdrop -->
+    <div id="sleep-timer-backdrop" class="sleep-timer-backdrop"></div>
+
+    <!-- Sleep timer panel -->
+    <div id="sleep-timer-panel" class="sleep-timer-panel" style="display:none">
+      <div id="sleep-timer-remaining" class="sleep-timer-remaining" style="display:none"></div>
+      <div class="sleep-timer-presets">
+        <button class="sleep-preset-btn" data-minutes="5">5m</button>
+        <button class="sleep-preset-btn" data-minutes="10">10m</button>
+        <button class="sleep-preset-btn" data-minutes="15">15m</button>
+        <button class="sleep-preset-btn" data-minutes="30">30m</button>
+        <button class="sleep-preset-btn" data-minutes="45">45m</button>
+        <button class="sleep-preset-btn" data-minutes="60">60m</button>
+      </div>
+      <div class="sleep-timer-actions">
+        <label class="sleep-action-label"><input type="radio" name="sleep-action" value="dim" checked> <span data-i18n="reader.sleep_action_dim">Zatemni zaslon</span></label>
+        <label class="sleep-action-label"><input type="radio" name="sleep-action" value="close"> <span data-i18n="reader.sleep_action_close">Zapri knjigo</span></label>
+        <label class="sleep-action-label"><input type="radio" name="sleep-action" value="wake"> <span data-i18n="reader.sleep_action_wake">Izklopi zaslon vedno vklopljen</span></label>
+      </div>
+      <button id="sleep-timer-cancel-btn" class="btn btn-secondary sleep-timer-cancel-btn" style="display:none" data-i18n="reader.sleep_timer_cancel">Prekliči časovnik</button>
+    </div>
+
+    <!-- Dim overlay — shown when sleep timer fires with "dim" action -->
+    <div id="sleep-dim-overlay" class="sleep-dim-overlay" style="display:none"></div>
 
     <!-- Reading area -->
     <div class="reader-main">
@@ -920,9 +946,11 @@
       <button class="annot-color-btn" data-color="blue"   data-i18n-title="reader.annotation_color_blue"   aria-label="Modra"></button>
       <button class="annot-color-btn" data-color="pink"   data-i18n-title="reader.annotation_color_pink"   aria-label="Roza"></button>
     </div>
-    <button id="annot-btn-note"   class="btn-icon-sm" data-i18n-title="reader.annotation_add_note" title="Dodaj opombo">✎</button>
-    <button id="annot-btn-dict"   class="btn-icon-sm annot-btn-dict" data-i18n-title="reader.annotation_dict_lookup" title="Slovar">🔍</button>
-    <button id="annot-btn-cancel" class="btn-icon-sm" data-i18n-aria-label="common.close" aria-label="Prekliči">✕</button>
+    <button id="annot-btn-note"        class="btn-icon-sm" data-i18n-title="reader.annotation_add_note"    title="Dodaj opombo"><img src="/images/add_note.svg"   class="nav-icon nav-icon-add-note"   alt=""></button>
+    <button id="annot-btn-dict"        class="btn-icon-sm annot-btn-dict" data-i18n-title="reader.annotation_dict_lookup" title="Slovar"><img src="/images/dictionary.svg" class="nav-icon nav-icon-dictionary" alt=""></button>
+    <button id="annot-btn-search-book" class="btn-icon-sm" data-i18n-title="reader.annotation_search_book"  title="Išči v knjigi"><img src="/images/find.svg"       class="nav-icon nav-icon-find"       alt=""></button>
+    <button id="annot-btn-copy"        class="btn-icon-sm" data-i18n-title="reader.annotation_copy"         title="Kopiraj"><img src="/images/copy.svg"       class="nav-icon nav-icon-copy"       alt=""></button>
+    <button id="annot-btn-cancel"      class="btn-icon-sm" data-i18n-aria-label="common.close" aria-label="Prekliči"><img src="/images/close.svg"       class="nav-icon nav-icon-close"      alt=""></button>
   </div>
 
   <!-- Annotation note editor — for writing/editing a note -->
@@ -930,6 +958,12 @@
     <div class="annot-note-header">
       <span id="annot-note-title" class="annot-note-label" data-i18n="reader.annotation_note_title">Opomba</span>
       <button id="annot-note-cancel" class="modal-close" data-i18n-aria-label="common.close" aria-label="Zapri">&#x2715;</button>
+    </div>
+    <div class="annot-note-colors">
+      <button class="annot-note-color-btn" data-color="yellow" data-i18n-title="reader.annotation_color_yellow" aria-label="Rumena"></button>
+      <button class="annot-note-color-btn" data-color="green"  data-i18n-title="reader.annotation_color_green"  aria-label="Zelena"></button>
+      <button class="annot-note-color-btn" data-color="blue"   data-i18n-title="reader.annotation_color_blue"   aria-label="Modra"></button>
+      <button class="annot-note-color-btn" data-color="pink"   data-i18n-title="reader.annotation_color_pink"   aria-label="Roza"></button>
     </div>
     <textarea id="annot-note-text" rows="4"
       data-i18n-placeholder="reader.annotation_note_placeholder"

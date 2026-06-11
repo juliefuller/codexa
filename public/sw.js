@@ -1,7 +1,7 @@
 // Codexa Service Worker
 // Caches app shell for offline use. EPUBs are cached on demand in BOOKS_CACHE.
 
-const CACHE_VERSION = 'br-v202606111030';
+const CACHE_VERSION = 'br-v202606111900';
 const BOOKS_CACHE   = 'codexa-books-v2';
 const APP_SHELL = [
   '/',
@@ -157,6 +157,20 @@ const APP_SHELL = [
   '/images/battery_bw.svg',
   '/images/battery_charging.svg',
   '/images/battery_charging_bw.svg',
+  '/images/copy.svg',
+  '/images/copy_bw.svg',
+  '/images/add_note.svg',
+  '/images/add_note_bw.svg',
+  '/images/dictionary.svg',
+  '/images/dictionary_bw.svg',
+  '/images/close.svg',
+  '/images/close_bw.svg',
+  '/images/density_compact.svg',
+  '/images/density_compact_bw.svg',
+  '/images/density_normal.svg',
+  '/images/density_normal_bw.svg',
+  '/images/density_large.svg',
+  '/images/density_large_bw.svg',
   '/icons/android-chrome-192x192.png',
   '/icons/android-chrome-512x512.png',
   '/icons/apple-touch-icon.png',

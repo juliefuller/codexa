@@ -296,6 +296,7 @@ let preAnnotationCfi = null;          // position before an annotation jump (for
 let annotationsCache = [];            // loaded annotations for current book
 let _pendingAnnotation = null;        // {cfiRange, text} waiting for color/note pick
 let _editingAnnotationId = null;      // id of annotation being edited in note editor
+let _pendingNoteColor = 'yellow';     // color selected in note editor before save
 const WORD_HIGHLIGHT_LINGER_MS = 500; // how long the press-highlight lingers after a dialog closes
 let _clearHlTimer = null;
 // Reading statistics tracking
@@ -1046,6 +1047,95 @@ function reapplyStyles() {
   } catch { /* ignore */ }
 }
 
+// ── Sleep timer ───────────────────────────────────────────────────────────────
+let _sleepTimerTimeout  = null;
+let _sleepTimerInterval = null;
+let _sleepTimerEnd      = 0;
+
+function openSleepTimerPanel() {
+  const panel    = document.getElementById('sleep-timer-panel');
+  const backdrop = document.getElementById('sleep-timer-backdrop');
+  if (!panel) return;
+  // Show remaining time if timer is active
+  const remainingEl = document.getElementById('sleep-timer-remaining');
+  const cancelBtn   = document.getElementById('sleep-timer-cancel-btn');
+  if (_sleepTimerTimeout) {
+    const ms = Math.max(0, _sleepTimerEnd - Date.now());
+    const m  = Math.floor(ms / 60000);
+    const s  = Math.floor((ms % 60000) / 1000);
+    if (remainingEl) { remainingEl.textContent = m + ':' + String(s).padStart(2, '0'); remainingEl.style.display = ''; }
+    if (cancelBtn) cancelBtn.style.display = '';
+  } else {
+    if (remainingEl) remainingEl.style.display = 'none';
+    if (cancelBtn) cancelBtn.style.display = 'none';
+  }
+  panel.style.display = 'flex';
+  backdrop?.classList.add('open');
+}
+
+function closeSleepTimerPanel() {
+  const panel    = document.getElementById('sleep-timer-panel');
+  const backdrop = document.getElementById('sleep-timer-backdrop');
+  if (panel) panel.style.display = 'none';
+  backdrop?.classList.remove('open');
+}
+
+function _updateSleepTimerBadge() {
+  const badge = document.getElementById('sleep-timer-badge');
+  const btn   = document.getElementById('btn-sleep-timer');
+  if (!badge || !btn) return;
+  if (!_sleepTimerTimeout) {
+    badge.classList.add('hidden');
+    btn.classList.remove('sleep-timer-active');
+    return;
+  }
+  const remaining = Math.max(0, _sleepTimerEnd - Date.now());
+  const m = Math.floor(remaining / 60000);
+  const s = Math.floor((remaining % 60000) / 1000);
+  badge.textContent = m > 0 ? m + 'm' : s + 's';
+  badge.classList.remove('hidden');
+  btn.classList.add('sleep-timer-active');
+}
+
+function startSleepTimer(minutes) {
+  if (_sleepTimerTimeout) cancelSleepTimer();
+  const action = document.querySelector('input[name="sleep-action"]:checked')?.value || 'dim';
+  _sleepTimerEnd = Date.now() + minutes * 60 * 1000;
+  _sleepTimerTimeout  = setTimeout(() => _fireSleepTimer(action), minutes * 60 * 1000);
+  _sleepTimerInterval = setInterval(_updateSleepTimerBadge, 1000);
+  _updateSleepTimerBadge();
+  closeSleepTimerPanel();
+}
+
+function cancelSleepTimer() {
+  clearTimeout(_sleepTimerTimeout);
+  clearInterval(_sleepTimerInterval);
+  _sleepTimerTimeout  = null;
+  _sleepTimerInterval = null;
+  _sleepTimerEnd      = 0;
+  _updateSleepTimerBadge();
+}
+
+function _fireSleepTimer(action) {
+  cancelSleepTimer();
+  if (action === 'dim') {
+    const overlay = document.getElementById('sleep-dim-overlay');
+    if (overlay) {
+      overlay.dataset.hint = t('reader.sleep_dim_hint');
+      overlay.style.display = 'flex';
+      overlay.addEventListener('click', () => { overlay.style.display = 'none'; }, { once: true });
+    }
+  } else if (action === 'close') {
+    void returnToLibrary();
+  } else if (action === 'wake') {
+    prefs.keepScreenOn = false;
+    savePrefs();
+    const el = document.getElementById('keep-screen-on-toggle');
+    if (el) el.checked = false;
+    void releaseWakeLock();
+  }
+}
+
 // ── Wake Lock (keep screen always on) ───────────────────────────────────────
 let wakeLock = null;
 async function acquireWakeLock() {
@@ -1705,8 +1795,13 @@ function closeAnnotationToolbar(keepHighlight = false) {
   if (!keepHighlight) scheduleClearPressHighlight();
 }
 
-function showAnnotationNoteEditor(annotationId, existingNote) {
+function showAnnotationNoteEditor(annotationId, existingNote, initialColor = null) {
   _editingAnnotationId = annotationId;
+  _pendingNoteColor = initialColor
+    || (annotationId != null ? (annotationsCache.find(x => x.id === annotationId)?.color || 'yellow') : 'yellow');
+  document.querySelectorAll('.annot-note-color-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.color === _pendingNoteColor);
+  });
   const ta = document.getElementById('annot-note-text');
   if (ta) ta.value = existingNote || '';
   document.getElementById('annot-note-editor')?.classList.add('open');
@@ -5208,6 +5303,36 @@ function escapeHtml(str) {
     .replace(/"/g, '&quot;');
 }
 
+// ── Header button fitting ─────────────────────────────────────────────────────
+// Dynamically shrinks header buttons so all of them always fit on narrow screens.
+// Recalculates --reader-header-btn-size and --reader-header-icon-size on the
+// header element whenever its width changes or a button is shown/hidden.
+(function initHeaderFit() {
+  const header = document.querySelector('.reader-header');
+  if (!header) return;
+
+  const MAX = 36, MIN = 22;
+
+  function fit() {
+    const btns = [...header.querySelectorAll('.btn-icon')]
+      .filter(b => getComputedStyle(b).display !== 'none');
+    const n = btns.length;
+    if (!n) return;
+    const cs  = getComputedStyle(header);
+    const pad = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
+    const gap = parseFloat(cs.gap) || 0;
+    const available = header.clientWidth - pad - gap * (n - 1) - 44; // 44px kept for title
+    const size = Math.max(MIN, Math.min(MAX, Math.floor(available / n)));
+    header.style.setProperty('--reader-header-btn-size', size + 'px');
+    header.style.setProperty('--reader-header-icon-size', Math.round(size * 0.56) + 'px');
+  }
+
+  fit();
+  new ResizeObserver(fit).observe(header);
+  // Re-fit when any button's inline style changes (e.g. back/accept buttons toggled)
+  new MutationObserver(fit).observe(header, { attributes: true, subtree: true, attributeFilter: ['style'] });
+}());
+
 // ── Button wiring ─────────────────────────────────────────────────────────────
 
 // Annotation toolbar
@@ -5235,14 +5360,12 @@ document.getElementById('annot-note-cancel')?.addEventListener('click', closeAnn
 document.getElementById('annot-note-save')?.addEventListener('click', async () => {
   const note = (document.getElementById('annot-note-text')?.value || '').trim();
   if (_editingAnnotationId !== null) {
-    // Edit mode
-    await updateAnnotation(_editingAnnotationId, { note });
+    await updateAnnotation(_editingAnnotationId, { note, color: _pendingNoteColor });
     closeAnnotationNoteEditor();
   } else if (_pendingAnnotation) {
-    // Create mode — color defaults to yellow when opened via Note button directly
     const { cfiRange, text } = _pendingAnnotation;
     closeAnnotationNoteEditor();
-    await createAnnotation(cfiRange, text, 'yellow', note);
+    await createAnnotation(cfiRange, text, _pendingNoteColor, note);
   }
 });
 
@@ -5253,7 +5376,7 @@ document.getElementById('annot-edit-note-btn')?.addEventListener('click', () => 
   const a  = annotationsCache.find(x => x.id === id);
   if (!a) return;
   closeAnnotationEditSheet();
-  showAnnotationNoteEditor(id, a.note || '');
+  showAnnotationNoteEditor(id, a.note || '', a.color || 'yellow');
 });
 document.getElementById('annot-edit-delete-btn')?.addEventListener('click', async () => {
   const id = parseInt(document.getElementById('annot-edit-sheet')?.dataset.annotId);
@@ -5279,6 +5402,53 @@ document.getElementById('annot-btn-dict')?.addEventListener('click', () => {
   if (word) showDictPopup(word);
 });
 
+// Copy selection to clipboard
+document.getElementById('annot-btn-copy')?.addEventListener('click', async () => {
+  const text = _pendingAnnotation?.text || '';
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    toast.success(t('reader.annotation_copied'));
+  } catch {
+    toast.error(t('reader.annotation_copy_failed'));
+  }
+  closeAnnotationToolbar();
+});
+
+// Search selection in book
+document.getElementById('annot-btn-search-book')?.addEventListener('click', () => {
+  const text = (_pendingAnnotation?.text || '').trim();
+  closeAnnotationToolbar();
+  openSearch();
+  if (text && searchInput) {
+    searchInput.value = text;
+    searchSubmitBtn?.click();
+  }
+});
+
+// Note editor color swatches
+document.querySelectorAll('.annot-note-color-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    _pendingNoteColor = btn.dataset.color;
+    document.querySelectorAll('.annot-note-color-btn').forEach(b =>
+      b.classList.toggle('active', b.dataset.color === _pendingNoteColor));
+  });
+});
+
+// Sleep timer button
+document.getElementById('btn-sleep-timer')?.addEventListener('click', () => {
+  const panel = document.getElementById('sleep-timer-panel');
+  if (panel?.style.display !== 'none') { closeSleepTimerPanel(); return; }
+  openSleepTimerPanel();
+});
+onTap(document.getElementById('sleep-timer-backdrop'), closeSleepTimerPanel);
+document.querySelectorAll('.sleep-preset-btn').forEach(btn => {
+  btn.addEventListener('click', () => startSleepTimer(parseInt(btn.dataset.minutes, 10)));
+});
+document.getElementById('sleep-timer-cancel-btn')?.addEventListener('click', () => {
+  cancelSleepTimer();
+  closeSleepTimerPanel();
+});
 
 // Annotations sidebar
 document.getElementById('btn-annotations')?.addEventListener('click', () =>
