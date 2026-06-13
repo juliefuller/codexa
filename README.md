@@ -11,9 +11,7 @@ For the full project overview, screenshots, feature list, KOReader setup, OPDS, 
 
 ## Why this fork exists
 
-This fork tracks upstream closely and adds a small set of changes for a **BookOrbit + multi-device** reading setup (Samsung tablet, desktop browser, KOReader sync) and a few reader UX tweaks.
-
-If you do not need the items below, use **[thehijacker/codexa](https://github.com/thehijacker/codexa)** instead.
+This fork tracks upstream closely and adds a small set of changes for a **BookOrbit** reading setup (Samsung tablet, desktop browser, KOReader sync) and a few reader UX tweaks.
 
 ---
 
