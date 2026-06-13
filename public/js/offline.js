@@ -122,6 +122,7 @@ export async function setDownloadStatus(bookId, status) {
 if (isOfflineSupported) {
   navigator.serviceWorker.addEventListener('message', e => {
     const { type, bookId, message } = e.data || {};
+    console.log('[offline] SW message received:', type, bookId);
     if (type === 'CACHE_BOOK_DONE' || type === 'CACHE_BOOK_ERROR') {
       const handlers = _pending.get(bookId);
       _pending.delete(bookId);

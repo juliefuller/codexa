@@ -145,7 +145,8 @@ html, body {
 [data-reader-eink] .nav-icon-percentage { content: url('/images/percentage_bw.svg'); }
 [data-reader-eink] .nav-icon-settings   { content: url('/images/settings_bw.svg'); }
 [data-reader-eink] .nav-icon-sync       { content: url('/images/sync_bw.svg'); }
-[data-reader-eink] .nav-icon-sb-battery { content: url('/images/battery_bw.svg'); }
+[data-reader-eink] .nav-icon-sb-battery          { content: url('/images/battery_bw.svg'); }
+[data-reader-eink] .nav-icon-sb-battery-charging { content: url('/images/battery_charging_bw.svg'); }
 [data-reader-eink] .nav-icon-back       { content: url('/images/back_bw.svg'); }
 [data-reader-eink] .nav-icon-fullscreen { content: url('/images/fullscreen_bw.svg'); }
 [data-reader-eink] img[src="/images/fullscreen_exit.svg"] { content: url('/images/fullscreen_exit_bw.svg'); }
@@ -492,13 +493,9 @@ body.page-gap-shadow-on .dict-popup {
   z-index: 5;
   display: flex;
   align-items: center;
-  cursor: pointer;
-  pointer-events: auto;
+  pointer-events: none;
   background: transparent;
-  -webkit-tap-highlight-color: transparent;
-  tap-highlight-color: transparent;
   user-select: none;
-  touch-action: manipulation;
 }
 .nav-zone:hover,
 .nav-zone:active,
@@ -509,27 +506,16 @@ body.page-gap-shadow-on .dict-popup {
 .nav-zone-prev {
   left: 0;
   width: var(--nav-zone-left-pct, 20%);
-  justify-content: flex-start;
-  padding-left: .5rem;
 }
 .nav-zone-next {
   right: 0;
   width: var(--nav-zone-right-pct, 20%);
-  justify-content: flex-end;
-  padding-right: .5rem;
 }
 
-/* Touch devices: nav zones sit above the iframe and steal long-press / drag-select.
-   Pass touches through to the book; page turns use swipe inside the iframe. */
+/* Touch devices: let the book handle its own scroll/zoom gestures. */
 @media (pointer: coarse) {
   #epub-viewer {
     touch-action: auto;
-  }
-  .nav-zone {
-    pointer-events: none;
-  }
-  .nav-arrow {
-    pointer-events: auto;
   }
 }
 
@@ -546,6 +532,10 @@ body.page-gap-shadow-on .dict-popup {
 .kosync-hotzone-br { right: 0; }
 /* Only the arrow button itself captures events and shows on hover */
 .nav-arrow {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  margin: auto 0;
   background: rgba(0, 0, 0, .35);
   backdrop-filter: blur(4px);
   color: #fff;
@@ -563,6 +553,8 @@ body.page-gap-shadow-on .dict-popup {
   opacity: 0;
   transition: opacity .2s;
 }
+.nav-zone-prev .nav-arrow { left:  .5rem; }
+.nav-zone-next .nav-arrow { right: .5rem; }
 .nav-arrow:hover { opacity: 1; }
 
 /* Touch / e-ink: hide hover-only arrows — they flash and repaint the whole zone */
@@ -1407,9 +1399,94 @@ input[type="range"]::-moz-range-thumb {
 }
 
 /* ── Book progress bar (thin status-bar strip) ─── */
+.sb-book-prog-track {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
 #sb-book-prog-fill {
   height: 100%;
   width: 0%;
+}
+
+/* Whole-book line with chapter tick marks — aligned with status-bar separator */
+#sb-book-prog.sb-book-prog-chapters {
+  overflow: visible;
+  background: transparent;
+  left:  calc(1.2rem + var(--edge-pad-left,  0px));
+  right: calc(1.2rem + var(--edge-pad-right, 0px));
+  z-index: 4;
+  /* Ink color scoped here only — does not affect status-bar text */
+  --sb-prog-ink: var(--color-accent);
+}
+#sb-book-prog.sb-book-prog-chapters .sb-book-prog-track {
+  overflow: visible;
+}
+#sb-book-prog.sb-book-prog-chapters .sb-book-prog-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 5px;
+  height: 1px;
+  background: var(--color-text-muted);
+  opacity: 0.45;
+  pointer-events: none;
+  z-index: 1;
+}
+#sb-book-prog.sb-book-prog-chap-range {
+  display: none;
+}
+#sb-book-prog-markers {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 5px;
+  height: 0;
+  pointer-events: none;
+  z-index: 3;
+}
+.sb-book-prog-marker {
+  position: absolute;
+  bottom: 0;
+  transform: translateX(-50%) translateY(50%);
+  width: 2px;
+  height: 11px;
+  background: var(--sb-prog-ink);
+  opacity: 0.92;
+  border-radius: 0.5px;
+  pointer-events: none;
+}
+#sb-book-prog.sb-book-prog-chapters #sb-book-prog-fill {
+  position: absolute;
+  left: 0;
+  bottom: 5px;
+  height: 1px;
+  background: var(--sb-prog-ink);
+  opacity: 0.95;
+  z-index: 2;
+}
+.sb-book-prog-cursor {
+  position: absolute;
+  bottom: 8px;
+  transform: translateX(-50%);
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid var(--sb-prog-ink);
+  pointer-events: none;
+  z-index: 4;
+}
+
+/* E-ink: crisp black ticks on a faint baseline */
+[data-reader-eink] #sb-book-prog.sb-book-prog-chapters {
+  --sb-prog-ink: #000;
+}
+[data-reader-eink] #sb-book-prog.sb-book-prog-chapters .sb-book-prog-line {
+  opacity: 0.25;
+}
+[data-reader-eink] .sb-book-prog-marker {
+  opacity: 1;
 }
 /* ── Jump-to-% panel: chapter nav buttons ─────────────── */
 .sb-chap-nav-btn {
@@ -1478,7 +1555,7 @@ input[type="range"]::-moz-range-thumb {
   flex: 1;
   min-width: 0;
 }
-.jump-pct-value-input {
+input.jump-pct-value-input {
   min-width: unset;
   width: 2.75rem;
   text-align: center;

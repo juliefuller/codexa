@@ -1,4 +1,5 @@
 import { apiFetch } from './api.js';
+import { getSyncDeviceName, setSyncDeviceName } from './sync-device.js';
 import { toast, confirmDialog, setButtonLoading } from './ui.js';
 import { t } from './i18n.js';
 import { showPanel } from './router.js';
@@ -20,6 +21,7 @@ const btnTestKosync          = document.getElementById('btn-test-kosync');
 const btnSaveKosync          = document.getElementById('btn-save-kosync');
 const btnClearKosync         = document.getElementById('btn-clear-kosync');
 const kosyncStatsEnabled     = document.getElementById('kosync-stats-enabled');
+const kosyncDeviceName       = document.getElementById('kosync-device-name');
 const kosyncInternalEnabled  = document.getElementById('kosync-internal-enabled');
 const kosyncInternalUrlBox   = document.getElementById('kosync-internal-url-box');
 const kosyncInternalUrlVal   = document.getElementById('kosync-internal-url-val');
@@ -35,6 +37,8 @@ async function loadSettings() {
     kosyncPassword.placeholder = s.has_kosync_password ? t('settings.kosync_pass_saved') : t('settings.kosync_pass_ph');
     updateStatusBadge(s.kosync_url ? null : 'not_configured');
     kosyncStatsEnabled.checked    = s.kosync_stats_enabled || false;
+    kosyncDeviceName.value        = localStorage.getItem('codexa_sync_device_name') || '';
+    if (!kosyncDeviceName.value) kosyncDeviceName.placeholder = getSyncDeviceName();
     kosyncInternalEnabled.checked = s.kosync_internal_enabled || false;
     updateInternalUrlBox();
   } catch (err) {
@@ -123,6 +127,9 @@ btnSaveKosync.addEventListener('click', async () => {
     const body = { kosync_url: url, kosync_username: username, kosync_stats_enabled: kosyncStatsEnabled.checked };
     // Only send password if user typed something new
     if (password) body.kosync_password = password;
+
+    setSyncDeviceName(kosyncDeviceName.value.trim());
+    if (!kosyncDeviceName.value.trim()) kosyncDeviceName.placeholder = getSyncDeviceName();
 
     await apiFetch('/settings', { method: 'PUT', body: JSON.stringify(body) });
     kosyncPassword.value       = '';

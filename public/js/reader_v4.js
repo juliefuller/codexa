@@ -3,10 +3,15 @@ import { toast } from './ui.js';
 import { t, initI18n, applyTranslations, getCurrentLang } from './i18n.js';
 import ePub from './flow/index.js';
 import { isBookDownloaded, downloadBook, fetchOfflineBookFile, getBookMeta, saveBookMeta } from './offline.js';
+import { getSyncDevice } from './sync-device.js';
 
-const READER_BUILD = 'br-v56';
+const READER_BUILD = 'br-v85';
 const _i18nReady = initI18n();
 console.log('[codexa] reader build', READER_BUILD);
+
+function kosyncDeviceFields() {
+  return getSyncDevice();
+}
 
 function onTap(el, handler) {
   if (!el) return;
@@ -26,9 +31,9 @@ if (!Promise.allSettled) {
 
 if (!requireAuth()) throw new Error('not authenticated');
 const params = new URLSearchParams(window.location.search);
+const isPeekMode = params.get('peek') === '1';
 const bookId = params.get('id');
 if (!bookId) { window.location.href = '/'; throw new Error(); }
-const isPeekMode = params.get('peek') === '1';
 const BIONIC_RELOAD_KEY = 'br_bionic_reload_state_v1';
 const SESSION_KEY = 'br_interrupted_session_v1';
 const RESUME_STATE_KEY = 'br_resume_state_v1';
@@ -178,7 +183,7 @@ const DEFAULT_STATUS_BAR = {
   separatorBottom:       true,
   separatorThickness:    1,
   showIcons:        {},           // { [statId]: false } to hide icon; default = show all
-  bookProgressBar:  { show: false, position: 'bottom', thickness: 3 },
+  bookProgressBar:  { show: false, position: 'bottom', thickness: 3, chapterMarkers: false },
   chapProgressBar:  { show: false, position: 'bottom', thickness: 2 },
   clockFormat:      '24h',   // '24h' | '12h'
 };
@@ -232,7 +237,7 @@ const DEFAULT_PREFS = {
   paraIndent:     true,         // paragraph text-indent (first line)
   paraIndentSize: 15,           // indent size when paraIndent=true (em × 10, so 15 = 1.5em)
   paraSpacing:    0,            // extra bottom margin between paragraphs (em × 10, so 0–30)
-  mouseWheelNav:  false,        // navigate pages with mouse wheel
+  mouseWheelNav:  true,         // navigate pages with mouse wheel scroll
   volumeKeysEnabled: false,    // navigate pages with hardware volume keys (Android app only)
   volumeKeysSwapped: false,    // swap volume-up/down direction
   lockPortrait:      false,    // lock orientation to portrait (PWA + Android app)
@@ -248,8 +253,8 @@ const DEFAULT_PREFS = {
   dictionaries:   [],           // enabled dict IDs in priority order; null = all disabled; empty = use all
   dictionaryOrder: [],          // all dict IDs in user's display order (including disabled ones)
   edgePadding:    { top: 0, bottom: 0, left: 0, right: 0 },   // px inset for curved screens
-  navZoneLeftPct:  20,          // % of screen width — tap/click to go back
-  navZoneRightPct: 20,          // % of screen width — tap/click to go forward
+  navZoneLeftPct:  0,          // % of screen width — tap/click to go back
+  navZoneRightPct: 0,          // % of screen width — tap/click to go forward
   headerRevealZonePct: 12,      // % of screen height — tap reveals auto-hidden toolbar
   headerButtonScalePct: 100,    // % of default responsive size (36 desktop / 44 mobile)
   statusBar:      null,         // deep-merged in loadPrefs()
@@ -298,10 +303,6 @@ let _clearHlTimer = null;
 // Reading statistics tracking
 let statsSessionId = null;            // active reading_sessions.id
 let sessionPageCount = 0;             // page navigation events in current session
-let activeReadingSeconds = 0;         // active time since last BookOrbit stats push
-let statsSessionStartTs = 0;          // unix seconds — start of current reading slice
-let statsPagesDelta = 0;              // page turns since last BookOrbit stats push
-let statsTimer = null;                // 1s interval for active reading time
 
 // ── Fork sync policy (juliefuller fork; extends upstream thehijacker/codexa) ──
 // Upstream syncs KOReader progress only on chapter boundaries and book close.
@@ -327,6 +328,10 @@ let lastSyncedCfi      = '';           // CFI at last successful remote push —
 let lastSyncedAt       = 0;            // ms timestamp of last successful remote kosync push
 let bestKnownRemotePct = 0;            // high-water mark from all sources — kosync is never pushed below this
 let kosyncStatsEnabled = false;        // user setting — sync reading stats to external KOReader server
+let activeReadingSeconds = 0;         // active time since last BookOrbit stats push
+let statsSessionStartTs = 0;          // unix seconds — start of current reading slice
+let statsPagesDelta = 0;              // page turns since last BookOrbit stats push
+let statsTimer = null;                // 1s interval for active reading time
 
 // ── Status bar state ──────────────────────────────────────────────────────────
 let currentHref      = '';    // current spine href (updated in updateProgress)
@@ -367,6 +372,8 @@ const sbChapProg      = document.getElementById('sb-chap-prog');
 const sbChapProgFill  = document.getElementById('sb-chap-prog-fill');
 const sbBookProg      = document.getElementById('sb-book-prog');
 const sbBookProgFill  = document.getElementById('sb-book-prog-fill');
+const sbBookProgMarkers = document.getElementById('sb-book-prog-markers');
+const sbBookProgCursor  = document.getElementById('sb-book-prog-cursor');
 const tocSidebar      = document.getElementById('toc-sidebar');
 const tocListEl      = document.getElementById('toc-list');
 const settingsPanel  = document.getElementById('settings-panel');
@@ -404,7 +411,7 @@ function loadPrefs() {
     const legacyRevealPx = typeof saved.headerRevealZone === 'number' ? saved.headerRevealZone : null;
     const legacyBtnPx = typeof saved.headerButtonSize === 'number' ? saved.headerButtonSize : null;
     const btnBase = window.matchMedia('(max-width: 640px)').matches ? 44 : 36;
-    return {
+    const merged = {
       ...DEFAULT_PREFS,
       ...saved,
       headerRevealZonePct: saved.headerRevealZonePct ?? (
@@ -428,6 +435,10 @@ function loadPrefs() {
         clockFormat:     sb.clockFormat || DEFAULT_STATUS_BAR.clockFormat,
       },
     };
+    if (merged.statusBar.bookProgressBar.chapterMarkers && !merged.statusBar.bookProgressBar.show) {
+      merged.statusBar.bookProgressBar.show = true;
+    }
+    return merged;
   } catch { return { ...DEFAULT_PREFS, statusBar: { ...DEFAULT_STATUS_BAR } }; }
 }
 
@@ -1187,9 +1198,10 @@ function attachIframeKeyboard(contents) {
   }, true);
   // Forward wheel events from iframe so mouseWheelNav works when cursor is over text
   contents.window.addEventListener('wheel', (e) => {
-    if (!prefs.mouseWheelNav) return;
+    if (!prefs.mouseWheelNav || !isReady) return;
+    e.preventDefault();
     document.dispatchEvent(new CustomEvent('br-wheel', { detail: { deltaY: e.deltaY } }));
-  }, { passive: true });
+  }, { passive: false });
 }
 
 // Inject long-press (mobile) and right-click (desktop) dictionary lookup
@@ -2036,8 +2048,7 @@ function computeStatValue(id) {
       return chapterLabelFromHref(currentHref);
     case 'battery': {
       if (!_batteryMgr) return '';
-      const pct = Math.round(_batteryMgr.level * 100);
-      return (_batteryMgr.charging ? '⚡\u202F' : '') + pct + '%';
+      return Math.round(_batteryMgr.level * 100) + '%';
     }
     case 'syncedAgo': {
       if (!lastSyncedAt) return '';
@@ -2059,7 +2070,8 @@ function computeSlot(ids) {
   return ids.map(id => {
     const val      = computeStatValue(id);
     if (!val) return '';
-    const iconSrc  = STAT_ICON[id];
+    let iconSrc    = STAT_ICON[id];
+    if (id === 'battery' && _batteryMgr?.charging) iconSrc = '/images/battery_charging.svg';
     const showIcon = prefs.statusBar.showIcons[id] !== false;   // default true
     const prefix   = (iconSrc && showIcon) ? sbIconHtml(iconSrc) + '\u202F' : '';
     return prefix + sbEsc(val);
@@ -2185,7 +2197,7 @@ function applyHeaderButtonSize() {
   const scale = prefs.headerButtonScalePct ?? 100;
   const size  = Math.round(getHeaderButtonBasePx() * scale / 100);
   root.style.setProperty('--reader-header-btn-size', size + 'px');
-  root.style.setProperty('--reader-header-icon-size', Math.max(14, Math.round(size * 0.33)) + 'px');
+  root.style.setProperty('--reader-header-icon-size', Math.max(14, Math.round(size * 0.53)) + 'px');
   root.style.setProperty('--reader-header-min-height', (size + 8) + 'px');
 }
 
@@ -2242,31 +2254,65 @@ function applyStatusBarStyles() {
   applyProgressBarLayout();
 }
 
+function statusBarProgOffset(edge) {
+  return edge === 'top'
+    ? 'calc(var(--sb-font-size, 11px) + 12px + var(--edge-pad-top, 0px))'
+    : 'calc(var(--sab) + var(--sb-font-size, 11px) + 9px + var(--edge-pad-bottom, 0px))';
+}
+
 function applyProgressBarLayout() {
   const sb      = prefs.statusBar;
   const chapCfg = sb.chapProgressBar;
   const bookCfg = sb.bookProgressBar;
+  const bookChapters = !!bookCfg.chapterMarkers;
+  const bookVisible  = !!(bookCfg.show || bookChapters);
 
   // When both bars are shown on the same edge, stack them so neither hides the other.
-  // Book bar sits flush at the edge; chapter bar is offset by book bar thickness.
-  const bothSame = chapCfg.show && bookCfg.show && chapCfg.position === bookCfg.position;
+  const bothSame = chapCfg.show && bookVisible && chapCfg.position === bookCfg.position;
 
   if (sbBookProg) {
-    sbBookProg.style.display = bookCfg.show ? '' : 'none';
-    sbBookProg.style.height  = bookCfg.thickness + 'px';
-    sbBookProg.style.top     = bookCfg.position === 'top'    ? 'var(--edge-pad-top, 0px)'    : 'auto';
-    sbBookProg.style.bottom  = bookCfg.position === 'bottom' ? 'calc(env(safe-area-inset-bottom, 0px) + var(--edge-pad-bottom, 0px))' : 'auto';
+    sbBookProg.style.display = bookVisible ? '' : 'none';
+    sbBookProg.classList.toggle('sb-book-prog-chapters', bookChapters);
+    const bookHeight = bookChapters ? Math.max(14, bookCfg.thickness + 8) : bookCfg.thickness;
+    sbBookProg.style.height  = bookHeight + 'px';
+    if (bookCfg.position === 'top') {
+      sbBookProg.style.top    = statusBarProgOffset('top');
+      sbBookProg.style.bottom = 'auto';
+    } else {
+      sbBookProg.style.top    = 'auto';
+      sbBookProg.style.bottom = statusBarProgOffset('bottom');
+    }
+    const lineEl = document.getElementById('sb-book-prog-line');
+    if (lineEl) lineEl.hidden = !bookChapters;
+    if (sbBookProgCursor) sbBookProgCursor.hidden = !bookChapters;
+    if (bookChapters) {
+      sbBookProg.style.setProperty('--sb-prog-ink', 'var(--color-accent)');
+      buildBookProgressMarkers();
+    } else {
+      sbBookProg.style.removeProperty('--sb-prog-ink');
+    }
   }
 
   if (sbChapProg) {
     sbChapProg.style.display = chapCfg.show ? '' : 'none';
     sbChapProg.style.height  = chapCfg.thickness + 'px';
-    const edgeVar   = chapCfg.position === 'top' ? 'var(--edge-pad-top, 0px)' : 'calc(env(safe-area-inset-bottom, 0px) + var(--edge-pad-bottom, 0px))';
-    const chapOffset = bothSame
-      ? `calc(${edgeVar} + ${bookCfg.thickness + 1}px)`
-      : edgeVar;
-    sbChapProg.style.top     = chapCfg.position === 'top'    ? chapOffset : 'auto';
-    sbChapProg.style.bottom  = chapCfg.position === 'bottom' ? chapOffset : 'auto';
+    const bookHeight = bookChapters ? Math.max(14, bookCfg.thickness + 8) : bookCfg.thickness;
+    const stackBook  = bothSame ? bookHeight + 2 : 0;
+    if (chapCfg.position === 'top') {
+      const topBase = statusBarProgOffset('top');
+      const chapOffset = bothSame
+        ? `calc(${topBase} + ${stackBook}px)`
+        : topBase;
+      sbChapProg.style.top    = chapOffset;
+      sbChapProg.style.bottom = 'auto';
+    } else {
+      const bottomBase = statusBarProgOffset('bottom');
+      const chapOffset = bothSame
+        ? `calc(${bottomBase} + ${stackBook}px)`
+        : bottomBase;
+      sbChapProg.style.top    = 'auto';
+      sbChapProg.style.bottom = chapOffset;
+    }
   }
 
   updateBookProgressBar();
@@ -2279,50 +2325,95 @@ function updateChapProgressBar() {
   sbChapProgFill.style.width = pct + '%';
 }
 
-function updateBookProgressBar() {
-  if (!prefs.statusBar.bookProgressBar.show || !sbBookProgFill) return;
-  sbBookProgFill.style.width = (currentPct * 100) + '%';
-}
-
-// Build hairline chapter markers on the jump-to-% slider.
-// Called after TOC and/or locations are available; safe to call multiple times.
-function buildChapterMarkers() {
-  const container = document.getElementById('sb-chap-markers');
-  if (!container) return;
-  container.innerHTML = '';
-  // Only top-level TOC entries (depth 0) — no need to mark every sub-section
-  const topLevel = tocFlatItems.filter(t => t.depth === 0);
-  if (topLevel.length < 2) return;
+function chapterPctFromHref(href) {
+  if (!href) return null;
+  const hrefBase = (href || '').split('#')[0];
+  if (book?.locations?.length() > 0) {
+    const spineItem = book.spine.get(hrefBase);
+    if (spineItem?.cfiBase) {
+      const pct = book.locations.percentageFromCfi(`epubcfi(${spineItem.cfiBase}!/4/1:0)`);
+      if (pct != null) return pct;
+    }
+  }
   const spineItems = book?.spine?.spineItems || [];
   const spineTotal = spineItems.length || 1;
+  const idx = spineItems.findIndex(s => {
+    const sh = (s.href || '').split('#')[0];
+    return sh === hrefBase || sh.endsWith('/' + hrefBase.split('/').pop());
+  });
+  if (idx > 0) return idx / spineTotal;
+  return 0;
+}
 
+function getChapterMarkerPositions() {
+  const topLevel = tocFlatItems.filter(item => item.depth === 0);
+  if (topLevel.length < 2) return [];
+  const positions = [];
   topLevel.forEach(({ href }, i) => {
-    if (i === 0) return; // first chapter starts at 0% — no marker needed
-    const hrefBase = (href || '').split('#')[0];
-    let pct = null;
-
-    // Prefer accurate percentage from epub.js locations table
-    if (book?.locations?.length() > 0) {
-      const spineItem = book.spine.get(hrefBase);
-      if (spineItem?.cfiBase) {
-        pct = book.locations.percentageFromCfi(`epubcfi(${spineItem.cfiBase}!/4/1:0)`);
-      }
-    }
-    // Fallback: spine-index ratio (no locations needed)
-    if (pct == null) {
-      const idx = spineItems.findIndex(s => {
-        const sh = (s.href || '').split('#')[0];
-        return sh === hrefBase || sh.endsWith('/' + hrefBase.split('/').pop());
-      });
-      if (idx > 0) pct = idx / spineTotal;
-    }
-
+    if (i === 0) return;
+    const pct = chapterPctFromHref(href);
     if (pct == null || pct <= 0.001 || pct >= 0.999) return;
+    positions.push(pct);
+  });
+  return positions;
+}
+
+function renderChapterMarkers(container, markerClass) {
+  if (!container) return;
+  container.innerHTML = '';
+  getChapterMarkerPositions().forEach((pct) => {
     const marker = document.createElement('div');
-    marker.className = 'sb-chap-marker';
+    marker.className = markerClass;
     marker.style.left = (pct * 100).toFixed(2) + '%';
     container.appendChild(marker);
   });
+}
+
+function getCurrentChapterBounds() {
+  const topLevel = tocFlatItems.filter(item => item.depth === 0);
+  if (!topLevel.length || !currentHref) return null;
+  const norm = h => (h || '').split('#')[0].split('/').pop()?.toLowerCase() || '';
+  const cur = norm(currentHref);
+  let idx = topLevel.findIndex(item => {
+    const base = norm(item.href);
+    return base && (cur === base || cur.includes(base) || base.includes(cur));
+  });
+  if (idx < 0) idx = 0;
+  const start = chapterPctFromHref(topLevel[idx]?.href) ?? 0;
+  const nextHref = topLevel[idx + 1]?.href;
+  const end = nextHref ? (chapterPctFromHref(nextHref) ?? 1) : 1;
+  return { start: Math.max(0, start), end: Math.min(1, end) };
+}
+
+function updateBookProgressChapterRange() {
+  const rangeEl = document.getElementById('sb-book-prog-chap-range');
+  if (rangeEl) rangeEl.hidden = true;
+}
+
+function updateBookProgressBar() {
+  const bookCfg = prefs.statusBar.bookProgressBar;
+  if (!(bookCfg.show || bookCfg.chapterMarkers) || !sbBookProgFill) return;
+  const pct = currentPct * 100;
+  sbBookProgFill.style.width = pct + '%';
+  if (prefs.statusBar.bookProgressBar.chapterMarkers) {
+    if (sbBookProgCursor) {
+      sbBookProgCursor.style.left = pct.toFixed(2) + '%';
+      sbBookProgCursor.hidden = false;
+    }
+    updateBookProgressChapterRange();
+  }
+}
+
+function buildBookProgressMarkers() {
+  if (!prefs.statusBar.bookProgressBar.chapterMarkers) return;
+  renderChapterMarkers(sbBookProgMarkers, 'sb-book-prog-marker');
+  updateBookProgressChapterRange();
+}
+
+// Build hairline chapter markers on the jump-to-% slider.
+function buildChapterMarkers() {
+  renderChapterMarkers(document.getElementById('sb-chap-markers'), 'sb-chap-marker');
+  buildBookProgressMarkers();
 }
 
 // ── Auto-hide header ──────────────────────────────────────────────────────────
@@ -2342,11 +2433,16 @@ function syncHeaderDismissBackdrop() {
   headerDismissBackdrop.classList.toggle('visible', show);
 }
 
+let _sensorCooldown = false;
 function forceHideAutoHeader() {
   if (!readerLayout.classList.contains('header-peek')) return;
   isMouseOverHeader = false;
   readerLayout.classList.remove('header-peek');
   syncHeaderDismissBackdrop();
+  // Suppress the spurious mouseenter the sensor fires when the backdrop
+  // disappears and the browser "re-enters" the now-exposed sensor element.
+  _sensorCooldown = true;
+  setTimeout(() => { _sensorCooldown = false; }, 300);
 }
 
 function revealHeader() {
@@ -2380,7 +2476,7 @@ function applyAutoHide() {
 
 // Show header when mouse enters the thin sensor zone at very top of page
 document.getElementById('header-sensor').addEventListener('mouseenter', () => {
-  if (!prefs.autoHideHeader) return;
+  if (!prefs.autoHideHeader || _sensorCooldown) return;
   revealHeader();
 });
 document.getElementById('header-sensor').addEventListener('touchstart', () => {
@@ -2718,7 +2814,10 @@ async function returnToLibrary() {
   stopPeriodicSync();
   stopBookStatsTracking();
   if (!prefs.skipSaveOnClose) {
-    await saveProgress(); // await so updated_at is committed before library reloads
+    // forceLocal only when the user actually navigated away from the opening position.
+    // An open-then-immediate-close (no pages turned) should not force-save the imprecise
+    // CFI-display starting page over the server's correct stored value.
+    await saveProgress({ forceLocal: currentCfi !== openCfi });
   }
   await endStatsSession();
   isReady = false;          // block beforeunload from double-saving
@@ -3519,11 +3618,13 @@ function syncStatusBarSettings() {
   const bookProgPos    = document.getElementById('sb-book-prog-pos');
   const bookProgThickSlider = document.getElementById('sb-book-prog-thick-slider');
   const bookProgThickValue  = document.getElementById('sb-book-prog-thick-value');
-  if (bookProgToggle) bookProgToggle.checked         = sb.bookProgressBar.show;
-  if (bookProgOpts)   bookProgOpts.style.display     = sb.bookProgressBar.show ? '' : 'none';
+  if (bookProgToggle) bookProgToggle.checked         = sb.bookProgressBar.show || sb.bookProgressBar.chapterMarkers;
+  if (bookProgOpts)   bookProgOpts.style.display     = (sb.bookProgressBar.show || sb.bookProgressBar.chapterMarkers) ? '' : 'none';
   if (bookProgPos)    bookProgPos.value               = sb.bookProgressBar.position;
   if (bookProgThickSlider) bookProgThickSlider.value = sb.bookProgressBar.thickness;
   if (bookProgThickValue)  bookProgThickValue.textContent = sb.bookProgressBar.thickness + 'px';
+  const bookChaptersToggle = document.getElementById('sb-book-prog-chapters-toggle');
+  if (bookChaptersToggle) bookChaptersToggle.checked = !!sb.bookProgressBar.chapterMarkers;
 
   // Chapter progress bar
   const chapProgToggle = document.getElementById('sb-chap-prog-toggle');
@@ -3623,6 +3724,11 @@ function initStatusBarSettings() {
   // Book progress bar
   document.getElementById('sb-book-prog-toggle')?.addEventListener('change', (e) => {
     prefs.statusBar.bookProgressBar.show = e.target.checked;
+    if (!e.target.checked) {
+      prefs.statusBar.bookProgressBar.chapterMarkers = false;
+      const chapToggle = document.getElementById('sb-book-prog-chapters-toggle');
+      if (chapToggle) chapToggle.checked = false;
+    }
     document.getElementById('sb-book-prog-opts').style.display = e.target.checked ? '' : 'none';
     applyProgressBarLayout(); persistPrefs();
   });
@@ -3633,6 +3739,17 @@ function initStatusBarSettings() {
   document.getElementById('sb-book-prog-thick-slider')?.addEventListener('input', (e) => {
     prefs.statusBar.bookProgressBar.thickness = parseInt(e.target.value);
     document.getElementById('sb-book-prog-thick-value').textContent = prefs.statusBar.bookProgressBar.thickness + 'px';
+    applyProgressBarLayout(); persistPrefs();
+  });
+  document.getElementById('sb-book-prog-chapters-toggle')?.addEventListener('change', (e) => {
+    prefs.statusBar.bookProgressBar.chapterMarkers = e.target.checked;
+    if (e.target.checked && !prefs.statusBar.bookProgressBar.show) {
+      prefs.statusBar.bookProgressBar.show = true;
+      const bookToggle = document.getElementById('sb-book-prog-toggle');
+      if (bookToggle) bookToggle.checked = true;
+      const bookOpts = document.getElementById('sb-book-prog-opts');
+      if (bookOpts) bookOpts.style.display = '';
+    }
     applyProgressBarLayout(); persistPrefs();
   });
 
@@ -3946,7 +4063,7 @@ function initSettingsUi() {
     prefs.customText = e.target.value;
     applyUiTheme(); reapplyStyles(); persistPrefs();
   });
-  document.querySelectorAll('.spread-btn').forEach(btn => {
+  document.querySelectorAll('.spread-btn[data-spread]').forEach(btn => {
     btn.addEventListener('click', async () => {
       prefs.spread = btn.dataset.spread;
       syncSettingsUi(); persistPrefs();
@@ -4164,8 +4281,7 @@ function pushRemoteProgress(docKey, xpointer, pct) {
       document:   docKey,
       progress:   xpointer,
       percentage: pct,
-      device:     'web',
-      device_id:  'codexa-web',
+      ...kosyncDeviceFields(),
     }),
   }).catch(() => {});
 }
@@ -4174,7 +4290,7 @@ function pushInternalProgress(docKey, xpointer, pct, force = false) {
   const qs = force ? '?force=1' : '';
   return apiFetch(`/kosync/internal/${encodeURIComponent(docKey)}${qs}`, {
     method: 'PUT',
-    body: JSON.stringify({ progress: xpointer, percentage: pct, device: 'web', device_id: 'codexa-web' }),
+    body: JSON.stringify({ progress: xpointer, percentage: pct, ...kosyncDeviceFields() }),
   }).catch(() => {});
 }
 
@@ -4201,7 +4317,6 @@ function startBookStatsTracking() {
     if (!document.hidden && isReady && currentBook) activeReadingSeconds++;
   }, 1000);
   if (docKey) {
-    // Ensure local cumulative counters exist for GREATEST-based BookOrbit upserts.
     loadBookStatsTotal(docKey, 'secs');
     loadBookStatsTotal(docKey, 'pages');
   }
@@ -4250,8 +4365,7 @@ function buildBookOrbitStatsPayload() {
       }],
     }],
     timestamp: now,
-    device: 'web',
-    device_id: 'codexa-web',
+    ...kosyncDeviceFields(),
   };
 }
 
@@ -4328,7 +4442,7 @@ async function initBattery() {
   if (_batteryMgr || !navigator.getBattery) return;
   try {
     _batteryMgr = await navigator.getBattery();
-    const refresh = () => { if (lastLocation) updateStatusBar(lastLocation); };
+    const refresh = () => { updateStatusBar(lastLocation ?? rendition?.currentLocation()); };
     _batteryMgr.addEventListener('levelchange',   refresh);
     _batteryMgr.addEventListener('chargingchange', refresh);
     refresh(); // apply immediately
@@ -4355,7 +4469,7 @@ function scheduleDebouncedSync() {
   }, SYNC_DEBOUNCE_MS);
 }
 
-async function saveProgress({ forceRemote = false, allowRemote = true, inSession = false, forced = false } = {}) {
+async function saveProgress({ forceRemote = false, allowRemote = true, inSession = false, forced = false, forceLocal = false } = {}) {
   if (!currentBook || !isReady) return;
   if (isPeekMode) return;
   const cfi = currentCfi || '';
@@ -4377,15 +4491,17 @@ async function saveProgress({ forceRemote = false, allowRemote = true, inSession
     console.log('[kosync] saveProgress: skipping kosync push — would go backwards:', Math.round(pct * 100) + '% < known best ' + Math.round(bestKnownRemotePct * 100) + '%');
   }
   console.log('[kosync] saveProgress docKey:', docKey, 'cfi:', cfi.slice(0, 40), 'pct:', Math.round(pct * 100) + '%', shouldPushKosync ? '' : (alreadySynced ? '(already synced)' : wouldGoBackwards ? '(would go backwards)' : '(no remote push)'));
-  // When force-pushing backwards the server needs force:true to bypass its own high-water mark
-  const progressPayload = { cfi_position: cfi, percentage: pct, device: 'web', ...(forced ? { force: true } : {}) };
+  // Local save: use force:true when the reader is closing (forceLocal) or the user is force-pushing
+  // backwards (forced).  The server's high-water mark only makes sense for passive cross-device
+  // updates — the active reader always knows the user's real current page.
+  const progressPayload = { cfi_position: cfi, percentage: pct, device: kosyncDeviceFields().device, ...((forced || forceLocal) ? { force: true } : {}) };
   const saves = [
     apiFetch(`/progress/${currentBook.file_hash}`, {
       method: 'PUT',
       body: JSON.stringify(progressPayload),
     }).then(() => {
       if (pct > 0) {
-        const cachePayload = { cfi_position: cfi, percentage: pct, device: 'web' };
+        const cachePayload = { cfi_position: cfi, percentage: pct, device: kosyncDeviceFields().device };
         try { localStorage.setItem(`br_progress_${currentBook.file_hash}`, JSON.stringify(cachePayload)); } catch { /* ignore */ }
       }
     }).catch(() => {}),
@@ -4429,13 +4545,16 @@ function saveProgressBackground({ inSession = false } = {}) {
   const xp     = koReaderXPointer();
   const posChanged    = cfi !== openCfi;
   const alreadySynced = cfi !== '' && cfi === lastSyncedCfi;
-  fetch(`/api/progress/${currentBook.file_hash}`, opts({ cfi_position: cfi, percentage: pct, device: 'web' })).catch(() => {});
+  // force:true only when position changed — prevents an open-then-tab-close from
+  // overwriting the server's good value with the imprecise CFI-display starting page.
+  const syncDev = kosyncDeviceFields();
+  fetch(`/api/progress/${currentBook.file_hash}`, opts({ cfi_position: cfi, percentage: pct, device: syncDev.device, ...(posChanged ? { force: true } : {}) })).catch(() => {});
   if (pct > 0) {
-    try { localStorage.setItem(`br_progress_${currentBook.file_hash}`, JSON.stringify({ cfi_position: cfi, percentage: pct, device: 'web' })); } catch { /* ignore */ }
+    try { localStorage.setItem(`br_progress_${currentBook.file_hash}`, JSON.stringify({ cfi_position: cfi, percentage: pct, device: syncDev.device })); } catch { /* ignore */ }
   }
   if (!alreadySynced && pct > 0 && (inSession || !prefs.skipSaveOnClose) && (posChanged || inSession) && pct >= bestKnownRemotePct - 0.005) {
-    fetch(`/api/kosync/remote/${encodeURIComponent(docKey)}`,   opts({ document: docKey, progress: xp, percentage: pct, device: 'web', device_id: 'codexa-web' })).catch(() => {});
-    fetch(`/api/kosync/internal/${encodeURIComponent(docKey)}`, opts({ progress: xp, percentage: pct, device: 'web', device_id: 'codexa-web' })).catch(() => {});
+    fetch(`/api/kosync/remote/${encodeURIComponent(docKey)}`,   opts({ document: docKey, progress: xp, percentage: pct, ...syncDev })).catch(() => {});
+    fetch(`/api/kosync/internal/${encodeURIComponent(docKey)}`, opts({ progress: xp, percentage: pct, ...syncDev })).catch(() => {});
     if (kosyncStatsEnabled) {
       const statsPayload = buildBookOrbitStatsPayload();
       if (statsPayload) {
@@ -4556,7 +4675,14 @@ async function syncOnOpen(localProgress) {
   // If remote is behind local, it means we already synced more recently from this
   // device (e.g. the hide-beacon fired but localProgress hasn't updated yet).
   const remoteIsAhead = (best.percentage || 0) > localPct + 0.005;
-  if (!xpointerMatch && pctDiffers && remoteIsAhead) {
+  // Exception: if the remote was saved MORE RECENTLY than our local progress (e.g.
+  // user deliberately pushed KOSync backwards to re-read a chapter), honour it even
+  // when it is behind.  Require >60 s gap to avoid spurious prompts from normal
+  // concurrent saves, and >0.5 % difference so trivial floating-point drift is ignored.
+  const remoteIsNewerAndDiffers =
+    bestTime > localTime + 60 &&
+    Math.abs((best.percentage || 0) - localPct) > 0.005;
+  if (!xpointerMatch && ((pctDiffers && remoteIsAhead) || remoteIsNewerAndDiffers)) {
     const doSync = await showSyncDialog(best, localPct, localTime);
     if (doSync) return { percentage: best.percentage, progress: best.progress };
   }
@@ -4853,6 +4979,38 @@ function attachIframeTouchNav(view) {
     if (dx > 8 && dx > dy) e.preventDefault();
   }, { passive: false });
 
+  // Zone-click navigation from inside the iframe (desktop + any pointer type).
+  // Nav zones are pointer-events:none so clicks always reach the iframe; this
+  // handler intercepts simple clicks in the nav zone area before they land on text.
+  // A 250 ms timer lets a double-click reach the dblclick/dict handler instead
+  // of treating the first click as a navigation intent.
+  let _zoneClickTimer = null;
+  win.addEventListener('click', (e) => {
+    if (hasOpenPanel()) return;
+    const iframe = view.element?.querySelector('iframe') || view.element;
+    const offX = iframe ? iframe.getBoundingClientRect().left : 0;
+    const nav = inNavZone(e.clientX + offX);
+    // Cancel any pending navigation on ANY second click — the timer check must come
+    // before the selection check because the browser selects the word on the second
+    // mousedown of a dblclick, so sel.isCollapsed is already false when the second
+    // click fires; checking selection first would skip this branch and let the
+    // first-click timer fire, causing navigation alongside the dict lookup.
+    if (_zoneClickTimer) {
+      clearTimeout(_zoneClickTimer);
+      _zoneClickTimer = null;
+      return;
+    }
+    if (!nav) return;
+    const sel = win.getSelection?.();
+    if (sel && !sel.isCollapsed) return;   // drag-select ended — don't navigate
+    e.preventDefault();
+    _zoneClickTimer = setTimeout(() => {
+      _zoneClickTimer = null;
+      if (nav === 'prev') goPrev(); else goNext();
+      if (prefs.autoHideHeader && readerLayout.classList.contains('header-peek')) forceHideAutoHeader();
+    }, 250);
+  });
+
   win.addEventListener('touchend', (e) => {
     if (suppressNextTap) {
       suppressNextTap = false;
@@ -4989,7 +5147,7 @@ async function applyPortraitLock(enabled) {
   } catch { /* Not available in regular browser or not in fullscreen */ }
 }
 
-// ── Mouse wheel navigation ────────────────────────────────────────────────────
+// ── Mouse wheel navigation ─────────────────────────────────────────────────────
 let wheelCooldown = false;
 function handleWheel(deltaY) {
   if (!prefs.mouseWheelNav || !isReady) return;
@@ -4998,7 +5156,11 @@ function handleWheel(deltaY) {
   setTimeout(() => { wheelCooldown = false; }, 400);
   if (deltaY > 0) goNext(); else goPrev();
 }
-epubViewer.addEventListener('wheel', (e) => { handleWheel(e.deltaY); }, { passive: true });
+epubViewer.addEventListener('wheel', (e) => {
+  if (!prefs.mouseWheelNav || !isReady) return;
+  e.preventDefault();
+  handleWheel(e.deltaY);
+}, { passive: false });
 document.addEventListener('br-wheel', (e) => { handleWheel(e.detail.deltaY); });
 
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
@@ -5460,11 +5622,11 @@ document.getElementById('kosync-zone-br')?.addEventListener('click', async () =>
   const [remResult, intResult] = await Promise.allSettled([
     apiFetch(`/kosync/remote/${encodeURIComponent(docKey)}`, {
       method: 'PUT',
-      body: JSON.stringify({ document: docKey, progress: xpointer, percentage: currentPct, device: 'web', device_id: 'codexa-web' }),
+      body: JSON.stringify({ document: docKey, progress: xpointer, percentage: currentPct, ...kosyncDeviceFields() }),
     }),
     apiFetch(`/kosync/internal/${encodeURIComponent(docKey)}`, {
       method: 'PUT',
-      body: JSON.stringify({ progress: xpointer, percentage: currentPct, device: 'web', device_id: 'codexa-web' }),
+      body: JSON.stringify({ progress: xpointer, percentage: currentPct, ...kosyncDeviceFields() }),
     }),
   ]);
 
@@ -5687,12 +5849,11 @@ document.querySelector('.nav-zone-next')?.addEventListener('click', e => { e.sto
 document.getElementById('btn-prev').addEventListener('keydown', e => { if (e.key === 'Enter') goPrev(); });
 document.getElementById('btn-next').addEventListener('keydown', e => { if (e.key === 'Enter') goNext(); });
 window.addEventListener('beforeunload', () => {
-  cancelDebouncedSync();
-  stopPeriodicSync();
-  stopBookStatsTracking();
   if (isPeekMode && currentBook) {
     try { sessionStorage.setItem('br_last_peek_book_id', String(currentBook.id)); } catch { /* ignore */ }
   }
+  cancelDebouncedSync();
+  stopPeriodicSync();
   if (!prefs.skipSaveOnClose) saveProgressBackground();
   endStatsSessionBackground();
 });
@@ -5860,11 +6021,9 @@ async function init() {
         // Seed the high-water mark so we never push below what the server already has
         if (localProgress.percentage > bestKnownRemotePct) bestKnownRemotePct = localProgress.percentage;
         // Keep the offline metadata in sync so "Currently Reading" is correct offline
-        if (!isPeekMode) {
-          getBookMeta(Number(bookId)).then(meta => {
-            if (meta) saveBookMeta({ ...meta, percentage: localProgress.percentage }).catch(() => {});
-          }).catch(() => {});
-        }
+        getBookMeta(Number(bookId)).then(meta => {
+          if (meta) saveBookMeta({ ...meta, percentage: localProgress.percentage }).catch(() => {});
+        }).catch(() => {});
       }
       if (!startCfi && localProgress?.cfi_position) startCfi = localProgress.cfi_position;
       // Pre-load locations from cache so seekToPercentage works immediately after startRendition
@@ -5904,22 +6063,29 @@ async function init() {
     loadAvailableDicts().then(updateDictButtonVisibility).catch(() => {});
     loadingOverlay.classList.add('hidden');
 
-    // epub.js display(cfi) with char-offset CFIs snaps to wrong page — seek forward by pct.
+    // Secondary percentage seek — only used when no full CFI was already applied by
+    // startRendition.  When startCfi IS a full epubcfi(…) the seek is skipped: it
+    // consistently overshoots because pct-to-location mapping has ±1–2 page granularity
+    // and triggers a drift (overshot position gets saved → next open overshoots further).
+    // Bionic reloads reduce startCfi to a chapter href so they still need the pct seek.
+    const startCfiIsEpubcfi = startCfi?.startsWith('epubcfi(');
     if (reloadStartPct != null && book.locations.length() > 0) {
       console.log('[pos] seeking to bionic-toggle pct:', (reloadStartPct * 100).toFixed(2) + '%');
       await seekToPercentage(reloadStartPct);
       console.log('[pos] after bionic seek currentCfi:', currentCfi.slice(0, 60));
-    } else if (resumeStartPct != null && book.locations.length() > 0) {
+    } else if (resumeStartPct != null && !startCfiIsEpubcfi && book.locations.length() > 0) {
       console.log('[pos] seeking to session-restore pct:', (resumeStartPct * 100).toFixed(2) + '%');
       await seekToPercentage(resumeStartPct);
       console.log('[pos] after session-restore seek currentCfi:', currentCfi.slice(0, 60));
-    } else if (localProgress?.percentage != null && book.locations.length() > 0) {
+    } else if (localProgress?.percentage != null && !startCfiIsEpubcfi && book.locations.length() > 0) {
       console.log('[pos] seeking to saved pct:', (localProgress.percentage*100).toFixed(2)+'%');
       await seekToPercentage(localProgress.percentage);
       console.log('[pos] after seek currentCfi:', currentCfi.slice(0,60));
     }
 
-    // Check remote/internal sync AFTER book is visible
+    // Check remote/internal sync AFTER book is visible.
+    // syncOnOpen's network request also gives epub.js time to fully settle its layout,
+    // which is why the CFI correction loop below runs after this call.
     const syncTarget = (prefs.skipOpenProgressCheck || skipOpenSync || isPeekMode) ? null : await syncOnOpen(localProgress);
     if (syncTarget?.percentage != null) {
       try {
@@ -5976,6 +6142,21 @@ async function init() {
           if (book.locations.length() > 0) await seekToPercentage(syncTarget.percentage);
         }
       } catch (e) { console.warn('[kosync] navigate failed:', e.message); }
+    } else if (startCfiIsEpubcfi && localProgress?.percentage != null && book.locations.length() > 0) {
+      // No sync navigation occurred.  The CFI display in startRendition snaps to the page
+      // containing the saved element but can land a few pages behind when the CFI has a
+      // character offset (the element starts on an earlier page).  epub.js also silently
+      // re-paginates during the syncOnOpen await above (which provides the settle time).
+      // Advance page-by-page to correct — no display(cfi) here, so there is no p=1
+      // chapter-reload artifact that caused the old seekToPercentage to overshoot.
+      const targetPct = localProgress.percentage;
+      for (let i = 0; i < 15; i++) {
+        const loc2 = rendition.currentLocation();
+        const cur2 = book.locations.percentageFromCfi(loc2?.start?.cfi || '') || 0;
+        if (cur2 >= targetPct - 0.005) break;
+        console.log('[pos] CFI undershoot +1 page', (cur2*100).toFixed(2)+'% → target', (targetPct*100).toFixed(2)+'%');
+        await rendition.next();
+      }
     }
 
     // Capture final position after all navigation (local seek + sync) is complete.
@@ -6022,6 +6203,11 @@ async function init() {
     // Start a stats session (non-blocking)
     void startStatsSession(currentBook.id);
     if (kosyncStatsEnabled) startBookStatsTracking();
+    window.setTimeout(() => {
+      import('./device-name-prompt.js')
+        .then((m) => m.maybePromptDeviceName())
+        .catch((err) => console.error('[device-prompt]', err));
+    }, 800);
     // Final chapter-name refresh — by now TOC and relocated have both fired
     if (lastChapterHref) {
       chapterTitleEl.textContent = chapterLabelFromHref(lastChapterHref);
@@ -6046,5 +6232,4 @@ document.addEventListener('langchange', () => {
   renderSbItems();
   renderDictSettings();
   populateSbFontSelect();
-  refreshStatusBarDynamic();
 });

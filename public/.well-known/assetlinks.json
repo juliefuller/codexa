@@ -1,0 +1,10 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "casa.school.codexa.twa",
+      "sha256_cert_fingerprints": ["E0:35:BD:1A:55:1A:1C:FB:D1:B7:EF:7E:0D:77:BC:3F:57:D3:73:C0:96:2C:DE:A0:84:1C:DB:47:14:9D:C6:72"]
+    }
+  }
+]

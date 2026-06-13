@@ -45,5 +45,10 @@ document.addEventListener('app:network-restored', fetchAndShowVersion);
     settings: initSettings,
     opds:     initOpds,
   });
+  window.setTimeout(() => {
+    import('./device-name-prompt.js')
+      .then((m) => m.maybePromptDeviceName())
+      .catch((err) => console.error('[device-prompt]', err));
+  }, 800);
 })();
 

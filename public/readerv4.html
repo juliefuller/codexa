@@ -173,7 +173,13 @@
       </div>
       <!-- Book progress bar (overlaid on reading area) -->
       <div id="sb-book-prog" class="sb-prog-bar" style="display:none">
-        <div id="sb-book-prog-fill" class="sb-prog-fill"></div>
+        <div id="sb-book-prog-track" class="sb-book-prog-track">
+          <div id="sb-book-prog-chap-range" class="sb-book-prog-chap-range" hidden></div>
+          <div id="sb-book-prog-markers"></div>
+          <div id="sb-book-prog-line" class="sb-book-prog-line" hidden></div>
+          <div id="sb-book-prog-fill" class="sb-prog-fill"></div>
+          <div id="sb-book-prog-cursor" class="sb-book-prog-cursor" hidden></div>
+        </div>
       </div>
     </div>
 
@@ -849,6 +855,20 @@
           </div>
         </div>
 
+        <!-- Whole-book line with chapter tick marks -->
+        <div class="setting-row">
+          <div class="setting-row-inline" style="gap:.5rem">
+            <div>
+              <div class="setting-label" data-i18n="reader.sb_book_prog_chapters">Chapter tick marks</div>
+              <div style="font-size:.75rem;color:var(--color-text-muted);margin-top:.1rem" data-i18n="reader.sb_book_prog_chapters_hint">Whole-book line with vertical ticks at each chapter — see book and chapter position at a glance</div>
+            </div>
+            <label class="toggle" style="flex-shrink:0">
+              <input type="checkbox" id="sb-book-prog-chapters-toggle" />
+              <span class="toggle-slider"></span>
+            </label>
+          </div>
+        </div>
+
         <!-- Chapter progress bar -->
         <div class="setting-row">
           <div class="setting-row-inline">
@@ -985,10 +1005,10 @@
     } catch {}
   </script>
 
-  <!-- JSZip must be loaded before epub.js -->
-  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/localforage@1.10.0/dist/localforage.min.js"></script>
-  <script type="module" src="/js/reader_v4.js?v=br-v56"></script>
+  <!-- JSZip must load before epub.js — served locally (APK WebView can block CDN) -->
+  <script src="/vendor/jszip.min.js"></script>
+  <script src="/vendor/localforage.min.js"></script>
+  <script type="module" src="/js/reader_v4.js?v=br-v85"></script>
   <script src="/js/sw-register.js"></script>
 </body>
 </html>

@@ -169,6 +169,11 @@
           <label for="kosync-password" data-i18n="settings.kosync_pass_label">Geslo</label>
           <input type="password" id="kosync-password" data-i18n-placeholder="settings.kosync_pass_ph" placeholder="Vnesite geslo…" autocomplete="new-password" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" data-form-type="other" />
         </div>
+        <div class="form-group">
+          <label for="kosync-device-name" data-i18n="settings.kosync_device_label">This device's name</label>
+          <input type="text" id="kosync-device-name" data-i18n-placeholder="settings.kosync_device_ph" placeholder="e.g. Pixel Tablet" autocomplete="off" autocapitalize="words" spellcheck="false" maxlength="64" />
+        </div>
+        <div class="settings-hint" data-i18n="settings.kosync_device_hint">Shown in BookOrbit as the device that synced each book. Auto-detected from your tablet if left blank.</div>
         <div style="display:flex;align-items:flex-start;gap:.85rem;margin:.75rem 0">
           <label class="toggle" style="flex-shrink:0;margin-top:.15rem">
             <input type="checkbox" id="kosync-stats-enabled">
