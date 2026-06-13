@@ -2,7 +2,24 @@
 <html lang="sl" data-i18n-doc-title="reader.loading_book">
 <head>
   <meta charset="UTF-8" />
-  <script>document.documentElement.style.visibility='hidden'</script>
+  <script>
+    document.documentElement.style.visibility = 'hidden';
+    // Apply stored theme colours immediately so the loading overlay is never invisible.
+    // Without this the default --color-bg (#1a1a2e) makes the overlay look solid black
+    // on e-ink displays before JS applies the real theme.
+    try {
+      var _p = JSON.parse(localStorage.getItem('br_reader_prefs') || '{}');
+      var _bg = '#1a1a2e', _fg = '#9a9ab0';
+      if (_p.eink)                           { _bg = '#f5f5f5'; _fg = '#444'; }
+      else if (_p.theme === 'light')         { _bg = '#f0f2f8'; _fg = '#555577'; }
+      else if (_p.theme === 'sepia')         { _bg = '#f5efe0'; _fg = '#7a6a50'; }
+      else if (_p.theme === 'nord')          { _bg = '#2e3440'; _fg = '#9a9ab0'; }
+      else if (_p.theme === 'midnight')      { _bg = '#0d0d0d'; _fg = '#888'; }
+      else if (_p.theme === 'custom' && _p.customBg) { _bg = _p.customBg; _fg = _p.customText || '#aaa'; }
+      document.documentElement.style.setProperty('--color-bg', _bg);
+      document.documentElement.style.setProperty('--color-text-muted', _fg);
+    } catch (_e) {}
+  </script>
   <!-- iOS 26 PWA: env(safe-area-inset-*) returns 0px at load time in standalone mode.
        100svh also reports wrong height (793px vs true 852px innerHeight on iPhone 16).
        Probe real values via DOM + window.innerHeight and re-apply after PWA chrome settles. -->
@@ -136,11 +153,14 @@
       <button id="btn-next-chap" class="sb-chap-nav-btn" data-i18n-title="reader.next_chapter" title="Naslednje poglavje">›</button>
     </div>
 
+    <!-- Floating navigation button (one-handed nav) -->
+    <div id="float-nav-btn" class="float-nav-btn" style="display:none"></div>
+
     <!-- Sleep timer backdrop -->
     <div id="sleep-timer-backdrop" class="sleep-timer-backdrop"></div>
 
     <!-- Sleep timer panel -->
-    <div id="sleep-timer-panel" class="sleep-timer-panel" style="display:none">
+    <div id="sleep-timer-panel" class="sleep-timer-panel">
       <div id="sleep-timer-remaining" class="sleep-timer-remaining" style="display:none"></div>
       <div class="sleep-timer-presets">
         <button class="sleep-preset-btn" data-minutes="5">5m</button>
@@ -392,6 +412,49 @@
             </label>
           </div>
         </div>
+
+        <div class="settings-divider"></div>
+
+        <!-- Header button visibility -->
+        <div class="setting-row">
+          <div class="setting-label" data-i18n="reader.header_btns_title">Gumbi v glavi bralnika</div>
+        </div>
+        <div class="setting-row">
+          <div class="setting-row-inline">
+            <div class="setting-label" data-i18n="reader.header_btn_annotations">Označbe</div>
+            <label class="toggle"><input type="checkbox" id="header-btn-annotations-toggle"><span class="toggle-slider"></span></label>
+          </div>
+        </div>
+        <div class="setting-row">
+          <div class="setting-row-inline">
+            <div class="setting-label" data-i18n="reader.header_btn_search">Iskanje</div>
+            <label class="toggle"><input type="checkbox" id="header-btn-search-toggle"><span class="toggle-slider"></span></label>
+          </div>
+        </div>
+        <div class="setting-row">
+          <div class="setting-row-inline">
+            <div class="setting-label" data-i18n="reader.header_btn_percentage">Odstotek</div>
+            <label class="toggle"><input type="checkbox" id="header-btn-percentage-toggle"><span class="toggle-slider"></span></label>
+          </div>
+        </div>
+        <div class="setting-row">
+          <div class="setting-row-inline">
+            <div class="setting-label" data-i18n="reader.header_btn_sync">Sinhronizacija</div>
+            <label class="toggle"><input type="checkbox" id="header-btn-sync-toggle"><span class="toggle-slider"></span></label>
+          </div>
+        </div>
+        <div class="setting-row">
+          <div class="setting-row-inline">
+            <div class="setting-label" data-i18n="reader.header_btn_sleep_timer">Časovnik</div>
+            <label class="toggle"><input type="checkbox" id="header-btn-sleep-timer-toggle"><span class="toggle-slider"></span></label>
+          </div>
+        </div>
+        <div class="setting-row">
+          <div class="setting-row-inline">
+            <div class="setting-label" data-i18n="reader.header_btn_fullscreen">Celozaslonski</div>
+            <label class="toggle"><input type="checkbox" id="header-btn-fullscreen-toggle"><span class="toggle-slider"></span></label>
+          </div>
+        </div>
       </div><!-- /.settings-tab-pane[theme] -->
 
       <!-- TAB: Text -->
@@ -618,6 +681,46 @@
             <span id="nav-zone-right-value" class="setting-value">20%</span>
           </div>
           <input type="range" id="nav-zone-right-slider" min="0" max="40" step="1" value="20" />
+        </div>
+
+        <div class="settings-divider"></div>
+
+        <!-- One-handed navigation -->
+        <div class="setting-section-title" data-i18n="reader.sb_section_one_hand">Enoročna navigacija</div>
+
+        <!-- Floating nav button -->
+        <div class="setting-row">
+          <div class="setting-row-inline">
+            <div>
+              <div class="setting-label" data-i18n="reader.float_nav_btn">Lebdeči gumb</div>
+              <div style="font-size:.75rem;color:var(--color-text-muted);margin-top:.15rem" data-i18n="reader.float_nav_btn_hint">Dotik = naprej, dolg pritisk = nazaj. Povleci za premestitev.</div>
+            </div>
+            <label class="toggle"><input type="checkbox" id="float-nav-btn-toggle"><span class="toggle-slider"></span></label>
+          </div>
+        </div>
+        <div class="setting-row" id="float-nav-btn-opacity-row" style="display:none">
+          <div class="setting-row-inline">
+            <div class="setting-label" data-i18n="reader.float_nav_btn_opacity">Vidnost gumba</div>
+            <span id="float-nav-btn-opacity-value" class="setting-value">70%</span>
+          </div>
+          <input type="range" id="float-nav-btn-opacity-slider" min="10" max="100" step="5" value="70" />
+        </div>
+
+        <!-- Vertical tap zones -->
+        <div class="setting-row">
+          <div class="setting-row-inline">
+            <div>
+              <div class="setting-label" data-i18n="reader.vert_nav_zones">Navpična cona dotika</div>
+              <div style="font-size:.75rem;color:var(--color-text-muted);margin-top:.15rem" data-i18n="reader.vert_nav_zones_hint">Zgornja = nazaj, spodnja = naprej</div>
+            </div>
+            <label class="toggle"><input type="checkbox" id="vert-nav-zones-toggle"><span class="toggle-slider"></span></label>
+          </div>
+        </div>
+        <div class="setting-row" id="vert-nav-zones-reverse-row" style="display:none">
+          <div class="setting-row-inline">
+            <div class="setting-label" data-i18n="reader.vert_nav_zones_reverse">Obrni (zgoraj = naprej)</div>
+            <label class="toggle"><input type="checkbox" id="vert-nav-zones-reverse-toggle"><span class="toggle-slider"></span></label>
+          </div>
         </div>
 
         <div class="settings-divider"></div>

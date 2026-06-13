@@ -1,7 +1,7 @@
 // Codexa Service Worker
 // Caches app shell for offline use. EPUBs are cached on demand in BOOKS_CACHE.
 
-const CACHE_VERSION = 'br-v202606111900';
+const CACHE_VERSION = 'br-v202606132100';
 const BOOKS_CACHE   = 'codexa-books-v2';
 const APP_SHELL = [
   '/',
@@ -161,8 +161,6 @@ const APP_SHELL = [
   '/images/copy_bw.svg',
   '/images/add_note.svg',
   '/images/add_note_bw.svg',
-  '/images/dictionary.svg',
-  '/images/dictionary_bw.svg',
   '/images/close.svg',
   '/images/close_bw.svg',
   '/images/density_compact.svg',
@@ -240,9 +238,26 @@ self.addEventListener('fetch', (e) => {
     return;
   }
 
-  // Never intercept other API calls or cross-origin
-  if (url.pathname.startsWith('/api/') ||
-      url.hostname !== self.location.hostname) {
+  // Pass same-origin API calls through via explicit respondWith — on some old
+  // Chromium WebViews (e.g. inkPalmPlus/zxh_wv_te) returning from a fetch event
+  // handler without calling e.respondWith() leaves the request pending forever
+  // instead of falling back to the browser's native network stack.
+  if (url.hostname === self.location.hostname && url.pathname.startsWith('/api/')) {
+    console.log('[sw] api passthrough>', url.pathname);
+    e.respondWith(
+      fetch(e.request).then(r => {
+        console.log('[sw] api passthrough<', url.pathname, r.status);
+        return r;
+      }).catch(err => {
+        console.warn('[sw] api passthrough ERR', url.pathname, err?.message);
+        throw err;
+      })
+    );
+    return;
+  }
+
+  // Cross-origin: not ours, let the browser handle natively
+  if (url.hostname !== self.location.hostname) {
     return;
   }
 

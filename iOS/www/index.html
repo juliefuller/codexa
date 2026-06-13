@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>Codexa</title>
+  <style>
+    :root {
+      --bg:      #0f1117;
+      --surface: #1a1d27;
+      --accent:  #5b8dee;
+      --text:    #e8eaf0;
+      --muted:   #7a7f94;
+      --border:  rgba(255,255,255,.1);
+      --radius:  14px;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: max(env(safe-area-inset-top), 1.5rem)
+               max(env(safe-area-inset-right), 1.5rem)
+               max(env(safe-area-inset-bottom), 1.5rem)
+               max(env(safe-area-inset-left), 1.5rem);
+    }
+
+    /* ── Setup card ──────────────────────────────────────────── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 2rem 1.75rem;
+      width: min(380px, 100%);
+      display: flex;
+      flex-direction: column;
+      gap: 1.25rem;
+    }
+    .logo { text-align: center; }
+    .logo h1 {
+      font-size: 2rem;
+      font-weight: 700;
+      letter-spacing: -0.04em;
+      color: var(--text);
+    }
+    .logo p { color: var(--muted); font-size: .9rem; margin-top: .3rem; }
+
+    label { font-size: .82rem; color: var(--muted); display: block; margin-bottom: .4rem; }
+    input[type=url] {
+      width: 100%;
+      background: rgba(255,255,255,.06);
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      color: var(--text);
+      font-size: 1rem;
+      padding: .75rem 1rem;
+      outline: none;
+      -webkit-appearance: none;
+      transition: border-color .15s;
+    }
+    input[type=url]:focus { border-color: var(--accent); }
+    input[type=url]::placeholder { color: var(--muted); }
+
+    .btn-primary {
+      width: 100%;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 9px;
+      font-size: 1rem;
+      font-weight: 600;
+      padding: .85rem;
+      cursor: pointer;
+      -webkit-appearance: none;
+      transition: opacity .15s;
+    }
+    .btn-primary:active { opacity: .8; }
+
+    .hint {
+      font-size: .8rem;
+      color: var(--muted);
+      text-align: center;
+      line-height: 1.55;
+      white-space: pre-line;
+    }
+    .error-msg { color: #e05c5c; font-size: .82rem; display: none; }
+
+    /* ── Connecting screen ───────────────────────────────────── */
+    #connecting {
+      width: min(380px, 100%);
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      gap: 1.25rem;
+      text-align: center;
+    }
+    .spinner {
+      width: 40px; height: 40px;
+      border: 3px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin .65s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #connecting p { color: var(--muted); font-size: .95rem; line-height: 1.5; }
+    #connecting strong { color: var(--text); font-weight: 500; }
+    .btn-link {
+      background: none;
+      border: none;
+      color: var(--muted);
+      font-size: .85rem;
+      cursor: pointer;
+      padding: .25rem .5rem;
+      text-decoration: underline;
+      -webkit-appearance: none;
+    }
+    .btn-link:active { color: var(--text); }
+  </style>
+</head>
+<body>
+
+  <!-- Setup form (shown when no server URL is saved) -->
+  <div class="card" id="setup-card">
+    <div class="logo">
+      <h1>Codexa</h1>
+      <p id="t-subtitle"></p>
+    </div>
+
+    <div>
+      <label for="url-input" id="t-label"></label>
+      <input
+        type="url"
+        id="url-input"
+        autocapitalize="none"
+        autocorrect="off"
+        spellcheck="false"
+        enterkeyhint="go"
+      >
+    </div>
+
+    <div class="error-msg" id="error-msg"></div>
+
+    <button class="btn-primary" id="connect-btn"></button>
+
+    <p class="hint" id="t-hint"></p>
+  </div>
+
+  <!-- Connecting / redirect screen -->
+  <div id="connecting">
+    <div class="spinner"></div>
+    <p><span id="t-connecting"></span><br><strong id="connecting-host"></strong></p>
+    <button class="btn-link" id="change-btn"></button>
+  </div>
+
+  <script>
+    // ── Translations ────────────────────────────────────────────────────────────
+    // All text for the setup screen. Embedded directly so the page works offline
+    // and before any server connection is established.
+    const T = {
+      en: {
+        subtitle:    'Connect to your library',
+        label:       'Server address',
+        placeholder: 'https://books.yourserver.com',
+        error:       'Please enter a valid URL starting with https://',
+        connect:     'Connect',
+        hint:        'Enter the full address of your Codexa server.\nExample: https://books.example.com',
+        connecting:  'Connecting to',
+        change:      'Change server',
+      },
+      de: {
+        subtitle:    'Mit deiner Bibliothek verbinden',
+        label:       'Serveradresse',
+        placeholder: 'https://buecher.deinserver.de',
+        error:       'Bitte eine gültige URL eingeben (muss mit https:// beginnen)',
+        connect:     'Verbinden',
+        hint:        'Vollständige Adresse deines Codexa-Servers eingeben.\nBeispiel: https://buecher.example.de',
+        connecting:  'Verbinde mit',
+        change:      'Server ändern',
+      },
+      fr: {
+        subtitle:    'Connectez-vous à votre bibliothèque',
+        label:       'Adresse du serveur',
+        placeholder: 'https://livres.votreserveur.fr',
+        error:       'Veuillez saisir une URL valide commençant par https://',
+        connect:     'Connecter',
+        hint:        'Saisissez l\'adresse complète de votre serveur Codexa.\nExemple: https://livres.example.fr',
+        connecting:  'Connexion à',
+        change:      'Changer de serveur',
+      },
+      es: {
+        subtitle:    'Conecta con tu biblioteca',
+        label:       'Dirección del servidor',
+        placeholder: 'https://libros.tuservidor.com',
+        error:       'Por favor, introduce una URL válida que empiece por https://',
+        connect:     'Conectar',
+        hint:        'Introduce la dirección completa de tu servidor Codexa.\nEjemplo: https://libros.example.com',
+        connecting:  'Conectando a',
+        change:      'Cambiar servidor',
+      },
+      pt: {
+        subtitle:    'Conecte-se à sua biblioteca',
+        label:       'Endereço do servidor',
+        placeholder: 'https://livros.seuservidor.com',
+        error:       'Por favor, insira uma URL válida começando com https://',
+        connect:     'Conectar',
+        hint:        'Insira o endereço completo do seu servidor Codexa.\nExemplo: https://livros.example.com',
+        connecting:  'Conectando a',
+        change:      'Alterar servidor',
+      },
+      it: {
+        subtitle:    'Connettiti alla tua biblioteca',
+        label:       'Indirizzo del server',
+        placeholder: 'https://libri.tuoserver.it',
+        error:       'Inserisci un URL valido che inizi con https://',
+        connect:     'Connetti',
+        hint:        'Inserisci l\'indirizzo completo del tuo server Codexa.\nEsempio: https://libri.example.it',
+        connecting:  'Connessione a',
+        change:      'Cambia server',
+      },
+      sl: {
+        subtitle:    'Poveži se s svojo knjižnico',
+        label:       'Naslov strežnika',
+        placeholder: 'https://knjige.tvoj-streznik.si',
+        error:       'Prosimo, vnesite veljaven URL, ki se začne z https://',
+        connect:     'Poveži',
+        hint:        'Vnesite celoten naslov vašega strežnika Codexa.\nPrimer: https://knjige.example.si',
+        connecting:  'Povezujem z',
+        change:      'Spremeni strežnik',
+      },
+    };
+
+    function detectLang() {
+      const lang = (navigator.language || navigator.userLanguage || 'en')
+        .split('-')[0].toLowerCase();
+      return T[lang] ? lang : 'en';
+    }
+
+    const t = T[detectLang()];
+
+    // Apply translations to DOM
+    document.getElementById('t-subtitle').textContent    = t.subtitle;
+    document.getElementById('t-label').textContent       = t.label;
+    document.getElementById('url-input').placeholder     = t.placeholder;
+    document.getElementById('error-msg').textContent     = t.error;
+    document.getElementById('connect-btn').textContent   = t.connect;
+    document.getElementById('t-hint').textContent        = t.hint;
+    document.getElementById('t-connecting').textContent  = t.connecting;
+    document.getElementById('change-btn').textContent    = t.change;
+
+    // ── Logic ───────────────────────────────────────────────────────────────────
+    const STORAGE_KEY = 'codexa_server_url';
+    let navTimer = null;
+
+    function normalise(raw) {
+      let url = raw.trim().replace(/\/+$/, '');
+      if (url && !url.startsWith('http://') && !url.startsWith('https://')) {
+        url = 'https://' + url;
+      }
+      try { new URL(url); return url; } catch { return null; }
+    }
+
+    function showConnecting(url) {
+      document.getElementById('setup-card').style.display = 'none';
+      const conn = document.getElementById('connecting');
+      conn.style.display = 'flex';
+      try {
+        document.getElementById('connecting-host').textContent = new URL(url).host;
+      } catch {
+        document.getElementById('connecting-host').textContent = url;
+      }
+      navTimer = setTimeout(() => { window.location.replace(url); }, 1500);
+    }
+
+    function showSetup(prefill) {
+      clearTimeout(navTimer);
+      document.getElementById('connecting').style.display = 'none';
+      const card = document.getElementById('setup-card');
+      card.style.display = 'flex';
+      if (prefill) document.getElementById('url-input').value = prefill;
+    }
+
+    document.getElementById('change-btn').addEventListener('click', () => {
+      const old = localStorage.getItem(STORAGE_KEY) || '';
+      localStorage.removeItem(STORAGE_KEY);
+      showSetup(old);
+    });
+
+    document.getElementById('connect-btn').addEventListener('click', () => {
+      const raw = document.getElementById('url-input').value;
+      const url = normalise(raw);
+      const errEl = document.getElementById('error-msg');
+      if (!url) {
+        errEl.style.display = 'block';
+        return;
+      }
+      errEl.style.display = 'none';
+      localStorage.setItem(STORAGE_KEY, url);
+      showConnecting(url);
+    });
+
+    document.getElementById('url-input').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') document.getElementById('connect-btn').click();
+    });
+
+    // Auto-launch if URL already saved
+    (function init() {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) showConnecting(saved);
+    })();
+  </script>
+</body>
+</html>

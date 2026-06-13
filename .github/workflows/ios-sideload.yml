@@ -1,0 +1,142 @@
+name: Build iOS IPA (Sideload / Free)
+
+# Builds an unsigned IPA that can be installed via Sideloadly or AltStore
+# using a free Apple ID. No Apple Developer account required.
+#
+# How to use:
+#   1. Go to Actions → "Build iOS IPA (Sideload / Free)" → Run workflow
+#   2. Wait ~30-40 minutes
+#   3. Download the IPA from the Artifacts section of the completed run
+#   4. Install with Sideloadly (sideloadly.io) on Windows using your free Apple ID
+#
+# Limitation: sideloaded apps signed with a free Apple ID expire after 7 days.
+# Re-install with Sideloadly to refresh. AltStore can auto-refresh over WiFi.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bundle_id:
+        description: 'Bundle ID (e.g. com.yourname.codexa) — use your planned final ID or leave as default'
+        required: false
+        default: 'com.test.codexa'
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 60
+
+    defaults:
+      run:
+        working-directory: iOS
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Node dependencies
+        run: npm install
+
+      # ── Capacitor ────────────────────────────────────────────────────────────
+      - name: Inject bundle ID
+        run: |
+          BUNDLE_ID="${{ github.event.inputs.bundle_id }}"
+          sed -i '' "s/REPLACE_WITH_YOUR_BUNDLE_ID/$BUNDLE_ID/" capacitor.config.json
+          echo "Building with bundle ID: $BUNDLE_ID"
+
+      - name: Generate iOS project
+        run: npx cap add ios
+
+      - name: Sync web assets and plugins
+        run: npx cap sync ios
+
+      # ── Native patches ────────────────────────────────────────────────────────
+      - name: Patch AppDelegate — keep screen always on
+        run: |
+          python3 - <<'PYEOF'
+          import re
+          path = 'ios/App/App/AppDelegate.swift'
+          code = open(path).read()
+          patched = re.sub(
+            r'(func application\(_ application: UIApplication,\s*'
+            r'didFinishLaunchingWithOptions[^\{]+\{)',
+            r'\1\n        UIApplication.shared.isIdleTimerDisabled = true',
+            code
+          )
+          if patched != code:
+            open(path, 'w').write(patched)
+            print("AppDelegate patched: screen always-on enabled")
+          else:
+            print("WARNING: AppDelegate pattern not matched — patch skipped")
+          PYEOF
+
+      - name: Configure Info.plist — fullscreen, hide status bar
+        run: |
+          PLIST="ios/App/App/Info.plist"
+          add_or_set() {
+            /usr/libexec/PlistBuddy -c "Add :$1 $2 $3" "$PLIST" 2>/dev/null \
+              || /usr/libexec/PlistBuddy -c "Set :$1 $3" "$PLIST"
+          }
+          add_or_set UIStatusBarHidden                        bool true
+          add_or_set UIViewControllerBasedStatusBarAppearance bool false
+          add_or_set UIRequiresFullScreen                     bool true
+
+      - name: Set version numbers
+        run: |
+          BUILD_NUM=$(date -u +%Y%m%d%H%M)
+          PBXPROJ="ios/App/App.xcodeproj/project.pbxproj"
+          sed -i '' "s/CURRENT_PROJECT_VERSION = [^;]*/CURRENT_PROJECT_VERSION = $BUILD_NUM/g" "$PBXPROJ"
+          sed -i '' "s/MARKETING_VERSION = [^;]*/MARKETING_VERSION = 1.0.0/g" "$PBXPROJ"
+          echo "Build number: $BUILD_NUM"
+
+      # ── CocoaPods ─────────────────────────────────────────────────────────────
+      - name: Pod install
+        run: |
+          cd ios/App
+          pod install --repo-update
+
+      # ── Build (code signing fully disabled) ───────────────────────────────────
+      - name: Build app (no code signing)
+        run: |
+          xcodebuild \
+            -workspace ios/App/App.xcworkspace \
+            -scheme App \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build/derived \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            DEVELOPMENT_TEAM="" \
+            build \
+            -quiet
+
+      # ── Package as IPA ────────────────────────────────────────────────────────
+      - name: Package IPA
+        run: |
+          APP=$(find build/derived/Build/Products/Release-iphoneos \
+                  -maxdepth 1 -name "*.app" | head -1)
+
+          if [ -z "$APP" ]; then
+            echo "ERROR: .app not found in derived data"
+            find build/derived -name "*.app" | head -10
+            exit 1
+          fi
+
+          echo "Packaging: $APP"
+          mkdir -p build/Payload
+          cp -r "$APP" build/Payload/
+          cd build
+          zip -qr Codexa-sideload.ipa Payload/
+          echo "IPA size: $(du -sh Codexa-sideload.ipa | cut -f1)"
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Codexa-sideload-${{ github.run_number }}
+          path: iOS/build/Codexa-sideload.ipa
+          retention-days: 30

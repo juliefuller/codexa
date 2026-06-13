@@ -1,0 +1,12 @@
+{
+  "appId": "REPLACE_WITH_YOUR_BUNDLE_ID",
+  "appName": "Codexa",
+  "webDir": "www",
+  "server": {
+    "allowNavigation": ["*"]
+  },
+  "ios": {
+    "allowsLinkPreview": false,
+    "contentInset": "never"
+  }
+}

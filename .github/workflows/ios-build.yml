@@ -1,0 +1,126 @@
+name: Build iOS & TestFlight
+
+on:
+  # Uncomment when Apple Developer account and all secrets are configured:
+  # push:
+  #   branches: [ main, master ]
+  #   paths:
+  #     - 'iOS/**'
+  #     - '.github/workflows/ios-build.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 75
+
+    defaults:
+      run:
+        working-directory: iOS
+
+    steps:
+      # ── Source ───────────────────────────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── Node.js ──────────────────────────────────────────────────────────────
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Node dependencies
+        run: npm install
+
+      # ── Ruby / Fastlane ───────────────────────────────────────────────────────
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
+          working-directory: iOS
+
+      # ── Capacitor: generate & sync iOS project ────────────────────────────────
+      - name: Inject bundle ID into Capacitor config
+        env:
+          BUNDLE_ID: ${{ secrets.BUNDLE_ID }}
+        run: |
+          sed -i '' "s/REPLACE_WITH_YOUR_BUNDLE_ID/$BUNDLE_ID/" capacitor.config.json
+
+      - name: Generate iOS project
+        run: npx cap add ios
+
+      - name: Sync web assets and plugins
+        run: npx cap sync ios
+
+      # ── Native patches ────────────────────────────────────────────────────────
+      - name: Patch AppDelegate — keep screen always on
+        run: |
+          python3 - <<'PYEOF'
+          import re, sys
+
+          path = 'ios/App/App/AppDelegate.swift'
+          code = open(path).read()
+
+          # Insert isIdleTimerDisabled immediately after the opening { of
+          # didFinishLaunchingWithOptions, before any existing code.
+          patched = re.sub(
+            r'(func application\(_ application: UIApplication,\s*'
+            r'didFinishLaunchingWithOptions[^\{]+\{)',
+            r'\1\n        UIApplication.shared.isIdleTimerDisabled = true',
+            code
+          )
+
+          if patched == code:
+            print("WARNING: AppDelegate pattern not found — keep-awake patch skipped")
+          else:
+            open(path, 'w').write(patched)
+            print("AppDelegate patched successfully")
+          PYEOF
+
+      - name: Configure Info.plist — hide status bar, fullscreen
+        run: |
+          PLIST="ios/App/App/Info.plist"
+
+          add_or_set() {
+            /usr/libexec/PlistBuddy -c "Add :$1 $2 $3" "$PLIST" 2>/dev/null \
+              || /usr/libexec/PlistBuddy -c "Set :$1 $3" "$PLIST"
+          }
+
+          # Hide status bar at launch
+          add_or_set UIStatusBarHidden              bool true
+          # Disable per-view-controller overrides so hidden stays hidden
+          add_or_set UIViewControllerBasedStatusBarAppearance bool false
+          # Prevent Split View / Slide Over (required for true fullscreen lock)
+          add_or_set UIRequiresFullScreen            bool true
+
+      # ── Set version numbers in Xcode project ──────────────────────────────────
+      - name: Set build and marketing version
+        run: |
+          BUILD_NUM=$(date -u +%Y%m%d%H%M)
+          PBXPROJ="ios/App/App.xcodeproj/project.pbxproj"
+
+          # Replace every occurrence so Debug + Release configs are both updated
+          sed -i '' "s/CURRENT_PROJECT_VERSION = [^;]*/CURRENT_PROJECT_VERSION = $BUILD_NUM/g" "$PBXPROJ"
+          sed -i '' "s/MARKETING_VERSION = [^;]*/MARKETING_VERSION = 1.0.0/g" "$PBXPROJ"
+
+          echo "Build number: $BUILD_NUM"
+
+      # ── CocoaPods ─────────────────────────────────────────────────────────────
+      - name: Pod install
+        run: |
+          cd ios/App
+          pod install --repo-update
+
+      # ── Sign & distribute ─────────────────────────────────────────────────────
+      - name: Build and upload to TestFlight
+        env:
+          ASC_KEY_ID:       ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID:    ${{ secrets.ASC_ISSUER_ID }}
+          ASC_PRIVATE_KEY:  ${{ secrets.ASC_PRIVATE_KEY }}
+          BUNDLE_ID:        ${{ secrets.BUNDLE_ID }}
+          MATCH_GIT_URL:    ${{ secrets.MATCH_GIT_URL }}
+          MATCH_GIT_USER:   ${{ secrets.MATCH_GIT_USER }}
+          MATCH_GIT_TOKEN:  ${{ secrets.MATCH_GIT_TOKEN }}
+          MATCH_PASSWORD:   ${{ secrets.MATCH_PASSWORD }}
+        run: bundle exec fastlane beta
