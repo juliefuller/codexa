@@ -4,9 +4,14 @@ import { t, initI18n, applyTranslations, getCurrentLang } from './i18n.js';
 import ePub from './flow/index.js';
 import { isBookDownloaded, downloadBook, fetchOfflineBookFile, getBookMeta, saveBookMeta } from './offline.js';
 
-const READER_BUILD = 'br-v57';
+const READER_BUILD = 'br-v76';
 const _i18nReady = initI18n();
 console.log('[codexa] reader build', READER_BUILD);
+
+// Module-level detection (mirrors init()'s _legacyWebView) so module-scope code can guard
+// features that break Chrome 83 Android WebView.
+const _isLegacyWv = /\bwv\b/.test(navigator.userAgent) &&
+  parseInt((/Chrome\/(\d+)/.exec(navigator.userAgent) || ['', '999'])[1]) < 90;
 
 function onTap(el, handler) {
   if (!el) return;
@@ -5547,7 +5552,9 @@ function escapeHtml(str) {
 // Dynamically shrinks header buttons so all of them always fit on narrow screens.
 // Recalculates --reader-header-btn-size and --reader-header-icon-size on the
 // header element whenever its width changes or a button is shown/hidden.
-(function initHeaderFit() {
+// On Chrome 83 WebView, initHeaderFit() is called explicitly inside init() after
+// startRendition() so no observers are active while critical fetch() calls are in flight.
+function initHeaderFit() {
   const header = document.querySelector('.reader-header');
   if (!header) return;
 
@@ -5563,15 +5570,28 @@ function escapeHtml(str) {
     const gap = parseFloat(cs.gap) || 0;
     const available = header.clientWidth - pad - gap * (n - 1) - 44; // 44px kept for title
     const size = Math.max(MIN, Math.min(MAX, Math.floor(available / n)));
-    header.style.setProperty('--reader-header-btn-size', size + 'px');
-    header.style.setProperty('--reader-header-icon-size', Math.round(size * 0.56) + 'px');
+    const btnPx  = size + 'px';
+    const iconPx = Math.round(size * 0.56) + 'px';
+    // Only write to style when values change — prevents MutationObserver feedback loop
+    // on Chrome 83 Android WebView where setProperty always fires the observer even for
+    // the same value, starving the event loop and blocking pending fetch() Promises.
+    if (header.style.getPropertyValue('--reader-header-btn-size')  !== btnPx)
+      header.style.setProperty('--reader-header-btn-size',  btnPx);
+    if (header.style.getPropertyValue('--reader-header-icon-size') !== iconPx)
+      header.style.setProperty('--reader-header-icon-size', iconPx);
   }
 
   fit();
   new ResizeObserver(fit).observe(header);
-  // Re-fit when any button's inline style changes (e.g. back/accept buttons toggled)
-  new MutationObserver(fit).observe(header, { attributes: true, subtree: true, attributeFilter: ['style'] });
-}());
+  // Re-fit when any button's inline style changes (e.g. back/accept buttons toggled).
+  // Skip on Chrome 83 WebView — even with the guard above, MutationObserver + fetch()
+  // interact badly on this WebView's event loop; ResizeObserver alone is sufficient.
+  if (!_isLegacyWv) {
+    new MutationObserver(fit).observe(header, { attributes: true, subtree: true, attributeFilter: ['style'] });
+  }
+}
+
+if (!_isLegacyWv) initHeaderFit();
 
 // ── Button wiring ─────────────────────────────────────────────────────────────
 
@@ -6031,9 +6051,15 @@ document.addEventListener('fullscreenchange', async () => {
 // ── Init ──────────────────────────────────────────────────────────────────────
 async function init() {
   await _i18nReady;
-  console.log('[reader] v4.2026-06-13.13');
-  console.log('[reader] UA:', navigator.userAgent.slice(0, 120));
+
+  console.log('[reader] UA:', navigator.userAgent.slice(0, 200));
   console.log('[reader] bookId:', bookId, 'online:', navigator.onLine);
+
+  const _chromeMatch = /Chrome\/(\d+)/.exec(navigator.userAgent);
+  const _chromeMajor = _chromeMatch ? parseInt(_chromeMatch[1]) : 999;
+  const _legacyWebView = /\bwv\b/.test(navigator.userAgent) && _chromeMajor < 90;
+  if (_legacyWebView) console.log('[reader] legacyWebView Chrome/' + _chromeMajor);
+
   // Always inherit library e-ink setting so reader opens in e-ink when library is in e-ink mode
   if (localStorage.getItem('br_library_theme') === 'eink' ||
       (typeof window.AndroidCodexa?.isEinkMode === 'function' && window.AndroidCodexa.isEinkMode())) {
@@ -6044,40 +6070,40 @@ async function init() {
   applyPageShadow();
   applyAutoHide();
   syncFullscreenButton();
-  // NOTE: loadCustomFonts() is intentionally deferred to after the critical loading
-  // path (metadata + epub). On inkPalmPlus/zxh_wv_te, any pending SW-intercepted
-  // fetch() — even fire-and-forget — poisons the async callback queue so that
-  // IndexedDB and CacheStorage Promises also stop resolving. Starting fonts here
-  // would hang getBookMeta() and fetchOfflineBookFile(). Moved to just before ePub().
+
+  // On Chrome 83 WebView (inkPalmPlus): loadCustomFonts() MUST come before
+  // initSettingsUi(). initSettingsUi() does 66ms of heavy DOM work that
+  // permanently breaks fetch() on this WebView if it runs first. This matches
+  // the order in br-v51 (the last known-good version).
+  if (_legacyWebView) {
+    await loadCustomFonts().catch(() => {});
+  }
+
   console.log('[reader] initSettingsUi...');
   initSettingsUi();
   console.log('[reader] applyVolumeKeyMode...');
   applyVolumeKeyMode(prefs.volumeKeysEnabled);
-  if (prefs.lockPortrait) void applyPortraitLock(true);
   console.log('[reader] isAndroidApp:', isAndroidApp(), 'setReaderMode:', !!window.AndroidCodexa?.setReaderMode);
-  // NOTE: setReaderMode() is deferred to after network calls — on some e-ink devices
-  // (inkPalmPlus) calling it before network requests causes subsequent fetches to hang.
-  // acquireWakeLock deferred to after book loads — calling navigator.wakeLock.request()
-  // during loading may freeze the compositor on some e-ink WebViews.
+  if (prefs.lockPortrait) void applyPortraitLock(true);
 
-  // rAF heartbeat: on some e-ink WebViews (NOT inkPalmPlus — see below) Chromium
-  // throttles setTimeout when no CSS animations are running and the rendering
-  // pipeline is idle. A pending rAF keeps the scheduler active so withTimeout
-  // fires on those devices. Stopped once loading is complete.
-  // NOTE: On inkPalmPlus/zxh_wv_te this rAF does NOT block fetch() — we handle
-  // that device by reading IndexedDB / CacheStorage directly (see below).
+  // rAF heartbeat: on some e-ink WebViews Chromium throttles setTimeout when no
+  // CSS animations are running. A pending rAF keeps the scheduler active so
+  // withTimeout fires. Not used for legacy WebViews — the old loading path has no
+  // timeouts and the rAF DOM writes can interfere with fetch resolution on slow renders.
   let _rafStop = false;
   let _rafDotTs = 0;
-  (function _loadingRaf() {
-    if (_rafStop) return;
-    const now = Date.now();
-    if (loadingMsg && now - _rafDotTs >= 600) {
-      _rafDotTs = now;
-      const clean = loadingMsg.textContent.replace(/[. ]+$/, '');
-      loadingMsg.textContent = clean + '.'.repeat((Math.floor(now / 600) % 3) + 1);
-    }
-    requestAnimationFrame(_loadingRaf);
-  })();
+  if (!_legacyWebView) {
+    (function _loadingRaf() {
+      if (_rafStop) return;
+      const now = Date.now();
+      if (loadingMsg && now - _rafDotTs >= 600) {
+        _rafDotTs = now;
+        const clean = loadingMsg.textContent.replace(/[. ]+$/, '');
+        loadingMsg.textContent = clean + '.'.repeat((Math.floor(now / 600) % 3) + 1);
+      }
+      requestAnimationFrame(_loadingRaf);
+    })();
+  }
 
   // ── Helper: race any promise against a ms timeout ──────────────────────────
   function withTimeout(promise, ms) {
@@ -6091,37 +6117,53 @@ async function init() {
   }
 
   // ── Book metadata ──────────────────────────────────────────────────────────
-  // On some old WebViews (inkPalmPlus/zxh_wv_te Android 11), SW respondWith()
-  // responses are never delivered to the main-thread fetch() Promise. To handle
-  // this, we try IndexedDB first (populated by downloadBook → saveBookMeta) and
-  // only fall back to fetch() for devices where it works.
   console.log('[reader] loading book metadata...');
   try {
     loadingMsg.textContent = t('reader.loading_book');
-    const _localMeta = await getBookMeta(Number(bookId));
-    if (_localMeta) {
-      currentBook = _localMeta;
-      console.log('[reader] book metadata from IndexedDB:', currentBook.title);
-      // Background refresh is deferred to after epub loading (see comment below).
+    if (_legacyWebView) {
+      // Legacy path (br-v51 pattern): network first → IDB only as offline fallback.
+      // IDB-first hangs on old WebViews; apiFetch is reliable.
+      console.log('[reader] metadata: network-first (legacy)');
+      try {
+        currentBook = await apiFetch(`/books/${bookId}`);
+        console.log('[reader] book metadata from network:', currentBook.title);
+      } catch {
+        const _meta = await getBookMeta(Number(bookId));
+        if (!_meta) throw new Error(t('reader.err_no_book'));
+        currentBook = _meta;
+        console.log('[reader] book metadata from IDB (offline):', currentBook.title);
+      }
     } else {
-      console.log('[reader] no local metadata, fetching from network...');
-      const _tok = getToken();
-      const _res = await fetch('/api/books/' + bookId, {
-        headers: Object.assign({ Accept: 'application/json' }, _tok ? { Authorization: 'Bearer ' + _tok } : {}),
-      });
-      console.log('[reader] fetch status:', _res.status);
-      if (!_res.ok) throw new Error('HTTP ' + _res.status);
-      currentBook = await _res.json();
-      console.log('[reader] book metadata from network:', currentBook.title);
-      saveBookMeta(currentBook).catch(() => {});
+      // Modern path: IDB first (fast offline start) → network fallback.
+      let _localMeta = null;
+      try {
+        const _idbTimeout = new Promise((_, rej) =>
+          setTimeout(() => rej(new Error('idb-timeout')), 2000)
+        );
+        _localMeta = await Promise.race([getBookMeta(Number(bookId)), _idbTimeout]);
+      } catch (e) {
+        console.warn('[reader] getBookMeta failed (' + (e?.message || e) + '), using network');
+      }
+      if (_localMeta) {
+        currentBook = _localMeta;
+        console.log('[reader] book metadata from IndexedDB:', currentBook.title);
+      } else {
+        console.log('[reader] fetching book metadata from network...');
+        const _tok = getToken();
+        const _res = await fetch('/api/books/' + bookId, {
+          headers: Object.assign({ Accept: 'application/json' }, _tok ? { Authorization: 'Bearer ' + _tok } : {}),
+        });
+        console.log('[reader] fetch status:', _res.status);
+        if (!_res.ok) throw new Error('HTTP ' + _res.status);
+        currentBook = await _res.json();
+        console.log('[reader] book metadata from network:', currentBook.title);
+        saveBookMeta(currentBook).catch(() => {});
+      }
     }
     bookTitleEl.textContent = currentBook.title;
     document.title = `${currentBook.title} — Codexa`;
     loadBookPrefs(currentBook.id);
     syncSettingsUi();
-    // NOTE: /opened POST deferred to after epub loads — any pending SW-intercepted
-    // fetch() hangs async callbacks on inkPalmPlus, so we avoid ALL fetch() calls
-    // until the critical loading path (IndexedDB + CacheStorage) is complete.
   } catch (err) {
     console.error('[reader] book metadata failed:', err?.message);
     const msg = t('reader.err_no_book');
@@ -6132,24 +6174,43 @@ async function init() {
   }
 
   // ── EPUB file ──────────────────────────────────────────────────────────────
-  // Same strategy: try CacheStorage directly first (fetchOfflineBookFile uses
-  // caches.open() — no SW fetch intercept involved), then fall back to network.
-  let arrayBuffer;
   console.log('[reader] loading epub...');
+  let arrayBuffer;
   try {
     loadingMsg.textContent = t('reader.loading_file');
-    arrayBuffer = await fetchOfflineBookFile(bookId);
-    if (arrayBuffer) {
-      console.log('[reader] epub from CacheStorage directly, bytes:', arrayBuffer.byteLength);
+    if (_legacyWebView) {
+      // Legacy path (br-v51 pattern): network first → CacheStorage only as offline fallback.
+      console.log('[reader] epub: network-first (legacy)');
+      try {
+        const _legRes = await fetch(`/api/books/${bookId}/file`, {
+          headers: { Authorization: `Bearer ${getToken()}` },
+        });
+        if (!_legRes.ok) throw new Error(`HTTP ${_legRes.status}`);
+        arrayBuffer = await _legRes.arrayBuffer();
+        console.log('[reader] epub from network (legacy), bytes:', arrayBuffer.byteLength);
+      } catch {
+        arrayBuffer = await fetchOfflineBookFile(bookId);
+        if (arrayBuffer) console.log('[reader] epub from CacheStorage (offline), bytes:', arrayBuffer.byteLength);
+      }
     } else {
-      console.log('[reader] epub not cached, fetching from network...');
-      const res = await withTimeout(
-        fetch(`/api/books/${bookId}/file`, { headers: { Authorization: `Bearer ${getToken()}` } }),
-        12000
+      // Modern path: CacheStorage first (instant offline) → network fallback.
+      const _cacheTimeout = new Promise((_, rej) =>
+        setTimeout(() => rej(new Error('cache-timeout')), 3000)
       );
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      arrayBuffer = await withTimeout(res.arrayBuffer(), 30000);
-      console.log('[reader] epub from network, bytes:', arrayBuffer.byteLength);
+      arrayBuffer = await Promise.race([fetchOfflineBookFile(bookId), _cacheTimeout]).catch(() => null);
+      if (arrayBuffer) {
+        console.log('[reader] epub from CacheStorage, bytes:', arrayBuffer.byteLength);
+      }
+      if (!arrayBuffer) {
+        console.log('[reader] fetching epub from network...');
+        const res = await withTimeout(
+          fetch(`/api/books/${bookId}/file`, { headers: { Authorization: `Bearer ${getToken()}` } }),
+          12000
+        );
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        arrayBuffer = await withTimeout(res.arrayBuffer(), 30000);
+        console.log('[reader] epub from network, bytes:', arrayBuffer.byteLength);
+      }
     }
   } catch (err) {
     console.warn('[reader] epub load failed:', err?.message);
@@ -6165,27 +6226,27 @@ async function init() {
     }
   }
 
-  // Critical local loading complete — now safe to start background fetch() calls.
-  // Any SW-intercepted fetch() dispatched before this point would have hung async
-  // callbacks (IndexedDB / CacheStorage) on inkPalmPlus/zxh_wv_te Android 11.
+  // Critical loading complete — now safe to start background fetch() calls.
   if (currentBook?.id) {
     apiFetch(`/books/${currentBook.id}/opened`, { method: 'POST' }).catch(() => {});
-    // Refresh cached metadata in background
-    const _rtok = getToken();
-    fetch('/api/books/' + bookId, {
-      headers: Object.assign({ Accept: 'application/json' }, _rtok ? { Authorization: 'Bearer ' + _rtok } : {}),
-    }).then(r => r.ok ? r.json() : null).then(b => { if (b) saveBookMeta(b).catch(() => {}); }).catch(() => {});
+    if (!_legacyWebView) {
+      // Refresh cached metadata in background
+      const _rtok = getToken();
+      fetch('/api/books/' + bookId, {
+        headers: Object.assign({ Accept: 'application/json' }, _rtok ? { Authorization: 'Bearer ' + _rtok } : {}),
+      }).then(r => r.ok ? r.json() : null).then(b => { if (b) saveBookMeta(b).catch(() => {}); }).catch(() => {});
+    }
   }
   console.log('[reader] fonts loading (non-blocking)...');
   loadCustomFonts().then(() => {
-    console.log('[reader] fonts done, count:', customFonts.length);
+    console.log('[reader] fonts loaded, count:', customFonts.length);
   }).catch(err => {
     console.warn('[reader] fonts failed:', err?.message);
   });
 
   // Activate reader mode AFTER network calls — avoids blocking fetches on e-ink devices
+  console.log('[reader] setReaderMode(true)...');
   if (isAndroidApp() && window.AndroidCodexa?.setReaderMode) {
-    console.log('[reader] setReaderMode(true)...');
     window.AndroidCodexa.setReaderMode(true);
     setTimeout(() => {
       const r = document.documentElement;
@@ -6197,15 +6258,15 @@ async function init() {
   }
 
   // Auto-download to offline cache in background after successful file load (skip in peek mode)
-  if (!isPeekMode && navigator.onLine && currentBook) {
+  if (!isPeekMode && navigator.onLine && currentBook && !_legacyWebView) {
     isBookDownloaded(Number(bookId)).then(cached => {
       if (!cached) downloadBook(currentBook, getToken()).catch(() => {});
     }).catch(() => {});
   }
 
-  console.log('[reader] creating ePub book object...');
   try {
     loadingMsg.textContent = t('reader.loading_open');
+    console.log('[reader] creating ePub book object...');
     book = ePub(arrayBuffer);
     console.log('[reader] ePub book created');
 
@@ -6269,7 +6330,7 @@ async function init() {
         // Seed the high-water mark so we never push below what the server already has
         if (localProgress.percentage > bestKnownRemotePct) bestKnownRemotePct = localProgress.percentage;
         // Keep the offline metadata in sync so "Currently Reading" is correct offline
-        getBookMeta(Number(bookId)).then(meta => {
+        if (!_legacyWebView) getBookMeta(Number(bookId)).then(meta => {
           if (meta) saveBookMeta({ ...meta, percentage: localProgress.percentage }).catch(() => {});
         }).catch(() => {});
       }
@@ -6299,14 +6360,14 @@ async function init() {
       }
     }
 
-    console.log('[reader] startRendition startCfi:', startCfi?.slice(0, 60) ?? 'null');
+    console.log('[reader] startRendition:', startCfi?.slice(0, 60) ?? 'null');
     await startRendition(startCfi);
     // Capture the page-start CFI epub.js actually rendered.
     {
       const loc = rendition.currentLocation();
       if (loc?.start?.cfi) currentCfi = loc.start.cfi;
       if (loc?.start?.percentage != null) currentPct = loc.start.percentage;
-      console.log('[pos] after startRendition currentCfi:', currentCfi.slice(0,60));
+      console.log('[pos] startRendition done, currentCfi:', currentCfi.slice(0, 60));
     }
     book.ready.then(() => initLocations()).catch(() => {});
     loadAvailableDicts().then(updateDictButtonVisibility).catch(() => {});
@@ -6315,6 +6376,9 @@ async function init() {
     // Deferred from init start: acquire wake lock only after book is fully loaded
     // to avoid potential compositor/timer interference during loading on e-ink WebViews.
     acquireWakeLock();
+    // On Chrome 83 WebView, initHeaderFit() is deferred until here so its ResizeObserver
+    // and MutationObserver don't run while critical fetch() calls are in flight.
+    if (_legacyWebView) initHeaderFit();
 
     // Secondary percentage seek — only used when no full CFI was already applied by
     // startRendition.  When startCfi IS a full epubcfi(…) the seek is skipped: it
@@ -6440,11 +6504,10 @@ async function init() {
         const total = book.spine?.spineItems?.length || book.spine?.length || 1;
         currentPct = (loc.start.index + 1) / total;
       }
-      console.log('[pos] final position before isReady cfi:', currentCfi.slice(0,60), 'pct:', (currentPct*100).toFixed(2)+'%');
     }
-    // Only allow saves after the initial position (local or synced) is fully displayed
-    console.log('[pos] isReady=true, currentCfi:', currentCfi.slice(0,60));
+    console.log('[pos] final position before isReady cfi:', currentCfi.slice(0,60), 'pct:', (currentPct*100).toFixed(2)+'%');
     isReady = true;
+    console.log('[pos] isReady=true, currentCfi:', currentCfi.slice(0,60));
     openCfi = currentCfi;      // snapshot position-on-open for change detection
     lastSyncedCfi = currentCfi; // server already knows this position — no immediate remote push needed
     cancelDebouncedSync();

@@ -1,7 +1,7 @@
 // Codexa Service Worker
 // Caches app shell for offline use. EPUBs are cached on demand in BOOKS_CACHE.
 
-const CACHE_VERSION = 'br-v202606132100';
+const CACHE_VERSION = 'br-v202606141600';
 const BOOKS_CACHE   = 'codexa-books-v2';
 const APP_SHELL = [
   '/',
@@ -23,49 +23,6 @@ const APP_SHELL = [
   '/js/sidebar.js',
   '/js/i18n.js',
   '/js/opds.js',
-  '/js/reader_v4.js',
-  '/js/flow/index.js',
-  '/js/flow/annotations.js',
-  '/js/flow/archive.js',
-  '/js/flow/book.js',
-  '/js/flow/container.js',
-  '/js/flow/contents.js',
-  '/js/flow/displayoptions.js',
-  '/js/flow/epub.js',
-  '/js/flow/epubcfi.js',
-  '/js/flow/layout.js',
-  '/js/flow/locations.js',
-  '/js/flow/mapping.js',
-  '/js/flow/marks-pane.js',
-  '/js/flow/navigation.js',
-  '/js/flow/packaging.js',
-  '/js/flow/pagelist.js',
-  '/js/flow/rendition.js',
-  '/js/flow/resources.js',
-  '/js/flow/section.js',
-  '/js/flow/spine.js',
-  '/js/flow/store.js',
-  '/js/flow/themes.js',
-  '/js/flow/managers/continuous/index.js',
-  '/js/flow/managers/default/index.js',
-  '/js/flow/managers/helpers/snap.js',
-  '/js/flow/managers/helpers/stage.js',
-  '/js/flow/managers/helpers/views.js',
-  '/js/flow/managers/views/iframe.js',
-  '/js/flow/managers/views/inline.js',
-  '/js/flow/utils/constants.js',
-  '/js/flow/utils/core.js',
-  '/js/flow/utils/debounce.js',
-  '/js/flow/utils/emitter.js',
-  '/js/flow/utils/hook.js',
-  '/js/flow/utils/mime.js',
-  '/js/flow/utils/path.js',
-  '/js/flow/utils/queue.js',
-  '/js/flow/utils/replacements.js',
-  '/js/flow/utils/request.js',
-  '/js/flow/utils/scrolltype.js',
-  '/js/flow/utils/throttle.js',
-  '/js/flow/utils/url.js',
   '/locales/en.json',
   '/locales/de.json',
   '/locales/es.json',
@@ -186,6 +143,7 @@ self.addEventListener('install', (e) => {
 
 // ── Activate: remove old app-shell caches (preserve books cache) ──────────────
 self.addEventListener('activate', (e) => {
+  console.log('[sw] activate version:', CACHE_VERSION);
   e.waitUntil(
     caches.keys().then(keys =>
       Promise.all(
@@ -199,7 +157,9 @@ self.addEventListener('activate', (e) => {
 });
 
 // ── Fetch: books cache → network, cache-first for app shell ──────────────────
+let _swVersionLogged = false;
 self.addEventListener('fetch', (e) => {
+  if (!_swVersionLogged) { _swVersionLogged = true; console.log('[sw] fetch version:', CACHE_VERSION); }
   const url = new URL(e.request.url);
 
   // Intercept EPUB file requests — serve from books cache when available
@@ -238,26 +198,25 @@ self.addEventListener('fetch', (e) => {
     return;
   }
 
-  // Pass same-origin API calls through via explicit respondWith — on some old
-  // Chromium WebViews (e.g. inkPalmPlus/zxh_wv_te) returning from a fetch event
-  // handler without calling e.respondWith() leaves the request pending forever
-  // instead of falling back to the browser's native network stack.
-  if (url.hostname === self.location.hostname && url.pathname.startsWith('/api/')) {
-    console.log('[sw] api passthrough>', url.pathname);
-    e.respondWith(
-      fetch(e.request).then(r => {
-        console.log('[sw] api passthrough<', url.pathname, r.status);
-        return r;
-      }).catch(err => {
-        console.warn('[sw] api passthrough ERR', url.pathname, err?.message);
-        throw err;
-      })
-    );
+  // Cross-origin: let browser handle natively (SW can't intercept these anyway).
+  if (url.hostname !== self.location.hostname) {
     return;
   }
 
-  // Cross-origin: not ours, let the browser handle natively
-  if (url.hostname !== self.location.hostname) {
+  // API calls: let the browser handle natively. On Chrome 83 Android WebView,
+  // routing through e.respondWith(fetch(e.request)) causes the response to hang
+  // silently. Native bypass (same as br-v51) is safe here because reader_v4.js
+  // is also bypassed, so there is no large SW IPC transfer that would corrupt routing.
+  if (url.pathname.startsWith('/api/')) {
+    return;
+  }
+
+  // Never serve the reader bundle via SW respondWith. On Chrome 83 Android WebView,
+  // transferring a large file (287 KB) through the SW IPC corrupts the native-fetch
+  // routing — any subsequent SW-returned-without-respondWith fetch hangs silently.
+  // The HTML loads the bundle with a ?v= cache-buster so the browser's own HTTP
+  // cache handles freshness; the SW APP_SHELL entry (without ?v=) never matched anyway.
+  if (url.pathname === '/js/reader_v4.js') {
     return;
   }
 

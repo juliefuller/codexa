@@ -2,6 +2,25 @@
 <html lang="sl" data-i18n-doc-title="reader.loading_book">
 <head>
   <meta charset="UTF-8" />
+  <!-- Chrome 83 WebView (inkPalmPlus/zxh_wv_te): when any SW controls the page,
+       return-without-respondWith for same-origin fetch() causes the response to hang
+       forever — regardless of file size. Ensure no SW is active before the page runs. -->
+  <script>
+    (function () {
+      if (!('serviceWorker' in navigator)) return;
+      if (!/Chrome\/8[0-3].*\bwv\b/.test(navigator.userAgent)) return;
+      navigator.serviceWorker.getRegistrations().then(function (regs) {
+        if (!regs.length) return;
+        console.warn('[reader] clearing SW for Chrome 83 (' + regs.length + ')...');
+        return Promise.all(regs.map(function (r) { return r.unregister(); })).then(function () {
+          console.warn('[reader] SW cleared, reloading...');
+          location.reload();
+        });
+      }).catch(function (e) {
+        console.warn('[reader] SW clear error:', e && e.message);
+      });
+    })();
+  </script>
   <script>
     document.documentElement.style.visibility = 'hidden';
     // Apply stored theme colours immediately so the loading overlay is never invisible.
@@ -1125,7 +1144,7 @@
   <!-- JSZip must be loaded before epub.js -->
   <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/localforage@1.10.0/dist/localforage.min.js"></script>
-  <script type="module" src="/js/reader_v4.js?v=br-v51"></script>
+  <script type="module" src="/js/reader_v4.js?v=br-v76"></script>
   <script src="/js/sw-register.js"></script>
 </body>
 </html>

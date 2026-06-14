@@ -2,7 +2,6 @@
  * api.js — centralised fetch wrapper
  * Reads the JWT from localStorage and attaches it to every request.
  */
-console.log('[api] v2026-06-13 no-signal');
 import { t } from './i18n.js';
 
 const API_BASE = '/api';
