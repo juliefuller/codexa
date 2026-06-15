@@ -5,7 +5,7 @@ import ePub from './flow/index.js';
 import { isBookDownloaded, downloadBook, fetchOfflineBookFile, getBookMeta, saveBookMeta } from './offline.js';
 import { getSyncDevice } from './sync-device.js';
 
-const READER_BUILD = 'br-v90';
+const READER_BUILD = 'br-v93';
 const _i18nReady = initI18n();
 console.log('[codexa] reader build', READER_BUILD);
 
@@ -2547,10 +2547,12 @@ function applyChapterProgressBarStyle() {
   const bg = getComputedStyle(root).getPropertyValue('--reader-page-bg').trim()
     || getComputedStyle(root).getPropertyValue('--color-bg').trim() || '#ffffff';
   const markerH = thick * 2 + 3;
-  const cursorSz = Math.max(3, Math.round(thick * 1.2));
+  const cursorSz = Math.round(3 + (thick - 1) * 1.5);
+  const cursorBottom = 5 + thick + 2;
   sbBookProg.style.setProperty('--sb-prog-thickness', thick + 'px');
   sbBookProg.style.setProperty('--sb-prog-marker-height', markerH + 'px');
   sbBookProg.style.setProperty('--sb-prog-cursor-size', cursorSz + 'px');
+  sbBookProg.style.setProperty('--sb-prog-cursor-bottom', cursorBottom + 'px');
   sbBookProg.style.setProperty('--sb-prog-ink', mixHex(bg, fg, strength));
   sbBookProg.style.setProperty('--sb-prog-marker-scale', thick <= 1 ? '0.5' : '1');
   const bandH = markerH + 8;
