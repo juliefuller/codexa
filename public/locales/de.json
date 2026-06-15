@@ -277,6 +277,7 @@
   "reader.sb_book_prog": "Buchfortschritt (Balken)",
   "reader.sb_book_prog_chapters": "Kapitelmarkierungen",
   "reader.sb_book_prog_chapters_hint": "Gesamtbuch-Linie mit vertikalen Strichen an jedem Kapitel — Buch- und Kapitelposition auf einen Blick",
+  "reader.sb_book_prog_opacity": "Deckkraft",
   "reader.sb_chap_prog": "Kapitelfortschritt (Balken)",
   "reader.sb_clock_format": "Uhrzeitformat",
   "reader.sb_clock_24h": "24h",

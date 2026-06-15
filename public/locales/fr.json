@@ -277,6 +277,7 @@
   "reader.sb_book_prog": "Progression du livre (barre)",
   "reader.sb_book_prog_chapters": "Marques de chapitre",
   "reader.sb_book_prog_chapters_hint": "Ligne du livre entier avec traits verticaux à chaque chapitre — position dans le livre et le chapitre en un coup d'œil",
+  "reader.sb_book_prog_opacity": "Opacité",
   "reader.sb_chap_prog": "Progression du chapitre (barre)",
   "reader.sb_clock_format": "Format de l'heure",
   "reader.sb_clock_24h": "24h",

@@ -5,7 +5,7 @@ import ePub from './flow/index.js';
 import { isBookDownloaded, downloadBook, fetchOfflineBookFile, getBookMeta, saveBookMeta } from './offline.js';
 import { getSyncDevice } from './sync-device.js';
 
-const READER_BUILD = 'br-v89';
+const READER_BUILD = 'br-v90';
 const _i18nReady = initI18n();
 console.log('[codexa] reader build', READER_BUILD);
 
@@ -188,7 +188,7 @@ const DEFAULT_STATUS_BAR = {
   separatorBottom:       true,
   separatorThickness:    1,
   showIcons:        {},           // { [statId]: false } to hide icon; default = show all
-  bookProgressBar:  { show: false, position: 'bottom', thickness: 3, chapterMarkers: false },
+  bookProgressBar:  { show: false, position: 'bottom', thickness: 3, chapterMarkers: false, chapterMarkerStrength: 50 },
   chapProgressBar:  { show: false, position: 'bottom', thickness: 2 },
   clockFormat:      '24h',   // '24h' | '12h'
 };
@@ -1289,6 +1289,7 @@ function applyUiTheme() {
     customBtn.style.background = prefs.customBg || '#000000';
     customBtn.style.color = prefs.customText || '#c8b89a';
   }
+  if (prefs.statusBar.bookProgressBar.chapterMarkers) applyChapterProgressBarStyle();
 }
 
 /*
@@ -2535,6 +2536,27 @@ function statusBarProgOffset(edge) {
     : 'calc(var(--sab) + var(--sb-font-size, 11px) + 9px + var(--edge-pad-bottom, 0px))';
 }
 
+/** Chapter tick bar: thickness + text↔background color blend (chapterMarkerStrength 0–100). */
+function applyChapterProgressBarStyle() {
+  if (!sbBookProg || !prefs.statusBar.bookProgressBar.chapterMarkers) return;
+  const bookCfg = prefs.statusBar.bookProgressBar;
+  const thick = Math.max(1, Math.min(10, bookCfg.thickness || 1));
+  const strength = Math.min(100, Math.max(0, bookCfg.chapterMarkerStrength ?? 50)) / 100;
+  const root = document.documentElement;
+  const fg = getComputedStyle(root).getPropertyValue('--color-text').trim() || '#000000';
+  const bg = getComputedStyle(root).getPropertyValue('--reader-page-bg').trim()
+    || getComputedStyle(root).getPropertyValue('--color-bg').trim() || '#ffffff';
+  const markerH = thick * 2 + 3;
+  const cursorSz = Math.max(3, Math.round(thick * 1.2));
+  sbBookProg.style.setProperty('--sb-prog-thickness', thick + 'px');
+  sbBookProg.style.setProperty('--sb-prog-marker-height', markerH + 'px');
+  sbBookProg.style.setProperty('--sb-prog-cursor-size', cursorSz + 'px');
+  sbBookProg.style.setProperty('--sb-prog-ink', mixHex(bg, fg, strength));
+  sbBookProg.style.setProperty('--sb-prog-marker-scale', thick <= 1 ? '0.5' : '1');
+  const bandH = markerH + 8;
+  sbBookProg.style.height = bandH + 'px';
+}
+
 function applyProgressBarLayout() {
   const sb      = prefs.statusBar;
   const chapCfg = sb.chapProgressBar;
@@ -2548,8 +2570,11 @@ function applyProgressBarLayout() {
   if (sbBookProg) {
     sbBookProg.style.display = bookVisible ? '' : 'none';
     sbBookProg.classList.toggle('sb-book-prog-chapters', bookChapters);
-    const bookHeight = bookChapters ? Math.max(14, bookCfg.thickness + 8) : bookCfg.thickness;
-    sbBookProg.style.height  = bookHeight + 'px';
+    if (bookChapters) {
+      applyChapterProgressBarStyle();
+    } else {
+      sbBookProg.style.height = bookCfg.thickness + 'px';
+    }
     if (bookCfg.position === 'top') {
       sbBookProg.style.top    = statusBarProgOffset('top');
       sbBookProg.style.bottom = 'auto';
@@ -2568,7 +2593,9 @@ function applyProgressBarLayout() {
   if (sbChapProg) {
     sbChapProg.style.display = chapCfg.show ? '' : 'none';
     sbChapProg.style.height  = chapCfg.thickness + 'px';
-    const bookHeight = bookChapters ? Math.max(14, bookCfg.thickness + 8) : bookCfg.thickness;
+    const bookHeight = bookChapters
+      ? (parseInt(sbBookProg?.style.height, 10) || bookCfg.thickness + 8)
+      : bookCfg.thickness;
     const stackBook  = bothSame ? bookHeight + 2 : 0;
     if (chapCfg.position === 'top') {
       const topBase = statusBarProgOffset('top');
@@ -3921,6 +3948,13 @@ function syncStatusBarSettings() {
   if (bookProgPos)    bookProgPos.value               = sb.bookProgressBar.position;
   if (bookProgThickSlider) bookProgThickSlider.value = sb.bookProgressBar.thickness;
   if (bookProgThickValue)  bookProgThickValue.textContent = sb.bookProgressBar.thickness + 'px';
+  const bookProgStrengthRow = document.getElementById('sb-book-prog-strength-row');
+  const bookProgStrengthSlider = document.getElementById('sb-book-prog-strength-slider');
+  const bookProgStrengthValue = document.getElementById('sb-book-prog-strength-value');
+  const chapStyleVisible = !!sb.bookProgressBar.chapterMarkers;
+  if (bookProgStrengthRow) bookProgStrengthRow.style.display = chapStyleVisible ? '' : 'none';
+  if (bookProgStrengthSlider) bookProgStrengthSlider.value = sb.bookProgressBar.chapterMarkerStrength ?? 50;
+  if (bookProgStrengthValue) bookProgStrengthValue.textContent = (sb.bookProgressBar.chapterMarkerStrength ?? 50) + '%';
   const bookChaptersToggle = document.getElementById('sb-book-prog-chapters-toggle');
   if (bookChaptersToggle) bookChaptersToggle.checked = !!sb.bookProgressBar.chapterMarkers;
 
@@ -4048,7 +4082,14 @@ function initStatusBarSettings() {
       const bookOpts = document.getElementById('sb-book-prog-opts');
       if (bookOpts) bookOpts.style.display = '';
     }
+    const strengthRow = document.getElementById('sb-book-prog-strength-row');
+    if (strengthRow) strengthRow.style.display = e.target.checked ? '' : 'none';
     applyProgressBarLayout(); persistPrefs();
+  });
+  document.getElementById('sb-book-prog-strength-slider')?.addEventListener('input', (e) => {
+    prefs.statusBar.bookProgressBar.chapterMarkerStrength = parseInt(e.target.value);
+    document.getElementById('sb-book-prog-strength-value').textContent = prefs.statusBar.bookProgressBar.chapterMarkerStrength + '%';
+    applyChapterProgressBarStyle(); persistPrefs();
   });
 
   // Chapter progress bar

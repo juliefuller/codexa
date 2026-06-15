@@ -276,6 +276,7 @@
   "reader.sb_book_prog": "Progresso libro (barra)",
   "reader.sb_book_prog_chapters": "Segni dei capitoli",
   "reader.sb_book_prog_chapters_hint": "Linea dell'intero libro con tacche verticali a ogni capitolo — posizione nel libro e nel capitolo a colpo d'occhio",
+  "reader.sb_book_prog_opacity": "Opacità",
   "reader.sb_chap_prog": "Progreso capitolo (barra)",
   "reader.sb_clock_format": "Formato ora",
   "reader.sb_clock_24h": "24h",

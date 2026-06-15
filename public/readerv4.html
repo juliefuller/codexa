@@ -1000,6 +1000,11 @@
               <span id="sb-book-prog-thick-value" class="setting-value">3px</span>
               <input type="range" id="sb-book-prog-thick-slider" min="1" max="10" step="1" value="3" style="flex:1;min-width:80px" />
             </div>
+            <div id="sb-book-prog-strength-row" class="setting-row-inline" style="display:none;flex-wrap:wrap;gap:.4rem;margin-top:.3rem">
+              <div class="setting-label" style="font-size:.8rem" data-i18n="reader.sb_book_prog_opacity">Opacity</div>
+              <span id="sb-book-prog-strength-value" class="setting-value">50%</span>
+              <input type="range" id="sb-book-prog-strength-slider" min="0" max="100" step="1" value="50" style="flex:1;min-width:80px" />
+            </div>
           </div>
         </div>
 
@@ -1164,7 +1169,7 @@
   <!-- JSZip must load before epub.js — served locally (APK WebView can block CDN) -->
   <script src="/vendor/jszip.min.js"></script>
   <script src="/vendor/localforage.min.js"></script>
-  <script type="module" src="/js/reader_v4.js?v=br-v89"></script>
+  <script type="module" src="/js/reader_v4.js?v=br-v90"></script>
   <script src="/js/sw-register.js"></script>
 </body>
 </html>

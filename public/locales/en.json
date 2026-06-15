@@ -277,6 +277,7 @@
   "reader.sb_book_prog": "Book progress (bar)",
   "reader.sb_book_prog_chapters": "Chapter tick marks",
   "reader.sb_book_prog_chapters_hint": "Whole-book line with vertical ticks at each chapter — see book and chapter position at a glance",
+  "reader.sb_book_prog_opacity": "Opacity",
   "reader.sb_chap_prog": "Chapter progress (bar)",
   "reader.sb_clock_format": "Clock format",
   "reader.sb_clock_24h": "24h",

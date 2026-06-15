@@ -277,6 +277,7 @@
   "reader.sb_book_prog": "Napredek knjige (trak)",
   "reader.sb_book_prog_chapters": "Oznake poglavij",
   "reader.sb_book_prog_chapters_hint": "Cela knjiga z navpičnimi črtami ob poglavjih — na prvi pogled vidiš položaj v knjigi in poglavju",
+  "reader.sb_book_prog_opacity": "Prosojnost",
   "reader.sb_chap_prog": "Napredek poglavja (trak)",
   "reader.sb_clock_format": "Format ure",
   "reader.sb_clock_24h": "24h",
