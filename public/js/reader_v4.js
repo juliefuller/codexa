@@ -2558,8 +2558,10 @@ function clearBookProgressChapterInlineStyles() {
   const reset = (el) => {
     if (!el) return;
     el.style.height = '';
+    el.style.width = '';
     el.style.backgroundColor = '';
     el.style.bottom = '';
+    el.style.transform = '';
     el.style.borderLeftWidth = '';
     el.style.borderRightWidth = '';
     el.style.borderTopWidth = '';
@@ -2570,6 +2572,7 @@ function clearBookProgressChapterInlineStyles() {
   reset(sbBookProgLine);
   reset(sbBookProgFill);
   reset(sbBookProgCursor);
+  sbBookProgMarkers?.querySelectorAll('.sb-book-prog-marker').forEach(reset);
 }
 
 function applyChapterProgressBarStyle() {

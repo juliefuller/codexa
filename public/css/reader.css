@@ -1538,18 +1538,13 @@ input[type="range"]::-moz-range-thumb {
   width: 0%;
 }
 
-/* Whole-book line with chapter tick marks — aligned with status-bar separator */
+/* Whole-book line with chapter tick marks — layout only; size/color from JS */
 #sb-book-prog.sb-book-prog-chapters {
   overflow: visible;
   background: transparent;
   left:  calc(1.2rem + var(--edge-pad-left,  0px));
   right: calc(1.2rem + var(--edge-pad-right, 0px));
   z-index: 4;
-  --sb-prog-thickness: 1px;
-  --sb-prog-marker-height: 6px;
-  --sb-prog-cursor-size: 3px;
-  --sb-prog-ink: var(--color-text-muted);
-  --sb-prog-marker-scale: 1;
 }
 #sb-book-prog.sb-book-prog-chapters .sb-book-prog-track {
   overflow: visible;
@@ -1559,8 +1554,6 @@ input[type="range"]::-moz-range-thumb {
   left: 0;
   right: 0;
   bottom: 5px;
-  height: var(--sb-prog-thickness);
-  background: var(--sb-prog-ink);
   pointer-events: none;
   z-index: 1;
 }
@@ -1587,19 +1580,18 @@ input[type="range"]::-moz-range-thumb {
   position: absolute;
   left: 0;
   bottom: 5px;
-  height: var(--sb-prog-thickness);
-  background: var(--sb-prog-ink);
   z-index: 2;
 }
 .sb-book-prog-cursor {
   position: absolute;
-  bottom: var(--sb-prog-cursor-bottom, 7px);
   transform: translateX(-50%);
   width: 0;
   height: 0;
-  border-left: var(--sb-prog-cursor-size) solid transparent;
-  border-right: var(--sb-prog-cursor-size) solid transparent;
-  border-top: calc(var(--sb-prog-cursor-size) * 1.33) solid var(--sb-prog-ink);
+  border-left-style: solid;
+  border-right-style: solid;
+  border-top-style: solid;
+  border-left-color: transparent;
+  border-right-color: transparent;
   pointer-events: none;
   z-index: 4;
 }

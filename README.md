@@ -5,7 +5,7 @@ This repository is a personal fork of **[Codexa](https://github.com/thehijacker/
 For the full project overview, screenshots, feature list, KOReader setup, OPDS, dictionary lookup, keyboard shortcuts, and self-hosting guide, see the **[upstream README](https://github.com/thehijacker/codexa/blob/main/README.md)**.
 
 **Upstream base:** [thehijacker/codexa](https://github.com/thehijacker/codexa) **v2.3.3** (merged June 2026).  
-**Reader build:** `br-v90`
+**Reader build:** `br-v95`
 
 ---
 
@@ -30,7 +30,7 @@ This fork tracks upstream closely and adds a small set of changes for a **BookOr
 
 | Change | Details |
 |---|---|
-| **Chapter tick progress bar** | **Settings → Status → Chapter tick marks**: whole-book horizontal line with vertical ticks at chapter boundaries, accent caret at current position, and a thin read-progress fill. Positioned above the bottom status text. Colors are scoped to the progress bar only — status-bar text is unchanged. |
+| **Chapter tick progress bar** | **Settings → Status → Chapter tick marks**: whole-book line with vertical ticks at chapter boundaries, a caret at current position, and read-progress fill. **Thickness** (1–10px) and **Opacity** (0–100%, blends page background → text color) sliders in book progress options. |
 | **Mouse wheel navigation** | **Settings → Device → Mouse wheel navigation** (on by default): scroll down = next page, scroll up = previous. Wheel events are forwarded from the EPUB iframe so paging works when the cursor is over the text. |
 
 ### Offline / mobile reliability

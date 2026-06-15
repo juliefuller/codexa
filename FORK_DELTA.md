@@ -3,7 +3,7 @@
 Maintained list of changes in this fork that are **not** in upstream. Use during every upstream merge: take upstream first, then re-apply or verify each item.
 
 **Last upstream merge base:** v2.3.3 (`17b47ae`, merged 2026-06-15)  
-**Reader build (fork):** `br-v90`
+**Reader build (fork):** `br-v95`
 
 ---
 
@@ -22,7 +22,7 @@ Maintained list of changes in this fork that are **not** in upstream. Use during
 
 | ID | Feature | Key files / symbols |
 |----|---------|---------------------|
-| F5 | **Chapter tick progress bar** | `readerv4.html` (`#sb-book-prog-*`), `reader.css` (`.sb-book-prog-*`), `reader_v4.js`: `bookProgressBar.chapterMarkers`, `buildBookProgressMarkers`, `applyProgressBarLayout` |
+| F5 | **Chapter tick progress bar** (thickness + opacity sliders) | `readerv4.html` (`#sb-book-prog-*`), `reader.css` (layout), `reader_v4.js`: `chapterMarkers`, `chapterMarkerStrength`, `applyChapterProgressBarStyle`, `buildBookProgressMarkers`, `expandHex`/`mixHex` |
 | F6 | **Mouse wheel page navigation** | `reader_v4.js`: `wheelNav` pref, wheel handler on iframe; `readerv4.html` settings toggle |
 
 ### Offline / deploy reliability
@@ -78,11 +78,10 @@ These landed upstream since v2.3.0 — merge in fully, then layer fork items on 
 
 ## Post-merge checklist
 
-1. Bump `READER_BUILD`, `readerv4.html?v=`, `sw.js` `CACHE_VERSION`, `i18n.js` `CACHE_VER`
-2. Re-apply uncommitted chapter-bar e-ink tick CSS (`br-v88`) if not committed pre-merge
-3. Smoke test: open book on tablet (local JSZip), wheel nav, chapter tick bar, kosync push + synced-ago, stats push if enabled
-4. Verify upstream: sleep timer, online status, grid density, MD5 override UI
-5. Deploy + hard refresh / SW update on devices
+1. Bump `READER_BUILD`, `readerv4.html?v=`, `reader.css?v=`, `sw.js` `CACHE_VERSION`, `i18n.js` `CACHE_VER`
+2. Smoke test: chapter tick bar thickness/opacity on e-ink and LCD, wheel nav, kosync + synced-ago, stats push if enabled
+3. Verify upstream: sleep timer, online status, grid density, MD5 override UI
+4. Deploy + hard refresh / SW update on devices
 
 ---
 
