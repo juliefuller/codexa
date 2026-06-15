@@ -5,7 +5,7 @@ import ePub from './flow/index.js';
 import { isBookDownloaded, downloadBook, fetchOfflineBookFile, getBookMeta, saveBookMeta } from './offline.js';
 import { getSyncDevice } from './sync-device.js';
 
-const READER_BUILD = 'br-v93';
+const READER_BUILD = 'br-v94';
 const _i18nReady = initI18n();
 console.log('[codexa] reader build', READER_BUILD);
 
@@ -62,12 +62,28 @@ function hexLuminance(hex) {
   const lin = c => c <= 0.03928 ? c/12.92 : Math.pow((c+0.055)/1.055, 2.4);
   return 0.2126*lin(r) + 0.7152*lin(g) + 0.0722*lin(b);
 }
+function expandHex(hex) {
+  if (!hex) return '#000000';
+  hex = hex.trim();
+  const rgb = hex.match(/^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+  if (rgb) {
+    const to2 = n => Math.max(0, Math.min(255, Number(n))).toString(16).padStart(2, '0');
+    return `#${to2(rgb[1])}${to2(rgb[2])}${to2(rgb[3])}`;
+  }
+  if (!hex.startsWith('#')) return hex;
+  if (hex.length === 4) {
+    return `#${hex[1]}${hex[1]}${hex[2]}${hex[2]}${hex[3]}${hex[3]}`;
+  }
+  return hex.length >= 7 ? hex.slice(0, 7) : hex;
+}
 function mixHex(h1, h2, t) {
-  const p = c => parseInt(c,16);
-  const r = Math.round(p(h1.slice(1,3)) + (p(h2.slice(1,3))-p(h1.slice(1,3)))*t);
-  const g = Math.round(p(h1.slice(3,5)) + (p(h2.slice(3,5))-p(h1.slice(3,5)))*t);
-  const b = Math.round(p(h1.slice(5,7)) + (p(h2.slice(5,7))-p(h1.slice(5,7)))*t);
-  return '#'+r.toString(16).padStart(2,'0')+g.toString(16).padStart(2,'0')+b.toString(16).padStart(2,'0');
+  h1 = expandHex(h1);
+  h2 = expandHex(h2);
+  const p = c => parseInt(c, 16);
+  const r = Math.round(p(h1.slice(1, 3)) + (p(h2.slice(1, 3)) - p(h1.slice(1, 3))) * t);
+  const g = Math.round(p(h1.slice(3, 5)) + (p(h2.slice(3, 5)) - p(h1.slice(3, 5))) * t);
+  const b = Math.round(p(h1.slice(5, 7)) + (p(h2.slice(5, 7)) - p(h1.slice(5, 7))) * t);
+  return '#' + r.toString(16).padStart(2, '0') + g.toString(16).padStart(2, '0') + b.toString(16).padStart(2, '0');
 }
 function deriveCustomPalette(bg, text) {
   const isDark = hexLuminance(bg) < 0.4;
@@ -2543,9 +2559,9 @@ function applyChapterProgressBarStyle() {
   const thick = Math.max(1, Math.min(10, bookCfg.thickness || 1));
   const strength = Math.min(100, Math.max(0, bookCfg.chapterMarkerStrength ?? 50)) / 100;
   const root = document.documentElement;
-  const fg = getComputedStyle(root).getPropertyValue('--color-text').trim() || '#000000';
-  const bg = getComputedStyle(root).getPropertyValue('--reader-page-bg').trim()
-    || getComputedStyle(root).getPropertyValue('--color-bg').trim() || '#ffffff';
+  const fg = expandHex(getComputedStyle(root).getPropertyValue('--color-text').trim() || '#000000');
+  const bg = expandHex(getComputedStyle(root).getPropertyValue('--reader-page-bg').trim()
+    || getComputedStyle(root).getPropertyValue('--color-bg').trim() || '#ffffff');
   const markerH = thick * 2 + 3;
   const cursorSz = Math.round(3 + (thick - 1) * 1.5);
   const cursorBottom = 5 + thick + 2;
