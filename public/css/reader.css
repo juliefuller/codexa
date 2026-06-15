@@ -1579,10 +1579,7 @@ input[type="range"]::-moz-range-thumb {
 .sb-book-prog-marker {
   position: absolute;
   bottom: 0;
-  transform: translateX(-50%) translateY(50%) scaleX(var(--sb-prog-marker-scale, 1));
-  width: var(--sb-prog-thickness);
-  height: var(--sb-prog-marker-height);
-  background: var(--sb-prog-ink);
+  transform: translateX(-50%) translateY(50%);
   border-radius: 0;
   pointer-events: none;
 }

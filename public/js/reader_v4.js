@@ -5,7 +5,7 @@ import ePub from './flow/index.js';
 import { isBookDownloaded, downloadBook, fetchOfflineBookFile, getBookMeta, saveBookMeta } from './offline.js';
 import { getSyncDevice } from './sync-device.js';
 
-const READER_BUILD = 'br-v94';
+const READER_BUILD = 'br-v95';
 const _i18nReady = initI18n();
 console.log('[codexa] reader build', READER_BUILD);
 
@@ -411,6 +411,7 @@ const sbChapProg      = document.getElementById('sb-chap-prog');
 const sbChapProgFill  = document.getElementById('sb-chap-prog-fill');
 const sbBookProg      = document.getElementById('sb-book-prog');
 const sbBookProgFill  = document.getElementById('sb-book-prog-fill');
+const sbBookProgLine  = document.getElementById('sb-book-prog-line');
 const sbBookProgMarkers = document.getElementById('sb-book-prog-markers');
 const sbBookProgCursor  = document.getElementById('sb-book-prog-cursor');
 const tocSidebar      = document.getElementById('toc-sidebar');
@@ -2553,26 +2554,69 @@ function statusBarProgOffset(edge) {
 }
 
 /** Chapter tick bar: thickness + text↔background color blend (chapterMarkerStrength 0–100). */
+function clearBookProgressChapterInlineStyles() {
+  const reset = (el) => {
+    if (!el) return;
+    el.style.height = '';
+    el.style.backgroundColor = '';
+    el.style.bottom = '';
+    el.style.borderLeftWidth = '';
+    el.style.borderRightWidth = '';
+    el.style.borderTopWidth = '';
+    el.style.borderTopColor = '';
+    el.style.borderLeftColor = '';
+    el.style.borderRightColor = '';
+  };
+  reset(sbBookProgLine);
+  reset(sbBookProgFill);
+  reset(sbBookProgCursor);
+}
+
 function applyChapterProgressBarStyle() {
   if (!sbBookProg || !prefs.statusBar.bookProgressBar.chapterMarkers) return;
   const bookCfg = prefs.statusBar.bookProgressBar;
   const thick = Math.max(1, Math.min(10, bookCfg.thickness || 1));
+  const thickPx = thick + 'px';
   const strength = Math.min(100, Math.max(0, bookCfg.chapterMarkerStrength ?? 50)) / 100;
   const root = document.documentElement;
   const fg = expandHex(getComputedStyle(root).getPropertyValue('--color-text').trim() || '#000000');
   const bg = expandHex(getComputedStyle(root).getPropertyValue('--reader-page-bg').trim()
     || getComputedStyle(root).getPropertyValue('--color-bg').trim() || '#ffffff');
+  const ink = mixHex(bg, fg, strength);
   const markerH = thick * 2 + 3;
+  const markerHPx = markerH + 'px';
   const cursorSz = Math.round(3 + (thick - 1) * 1.5);
   const cursorBottom = 5 + thick + 2;
-  sbBookProg.style.setProperty('--sb-prog-thickness', thick + 'px');
-  sbBookProg.style.setProperty('--sb-prog-marker-height', markerH + 'px');
-  sbBookProg.style.setProperty('--sb-prog-cursor-size', cursorSz + 'px');
-  sbBookProg.style.setProperty('--sb-prog-cursor-bottom', cursorBottom + 'px');
-  sbBookProg.style.setProperty('--sb-prog-ink', mixHex(bg, fg, strength));
-  sbBookProg.style.setProperty('--sb-prog-marker-scale', thick <= 1 ? '0.5' : '1');
   const bandH = markerH + 8;
+
   sbBookProg.style.height = bandH + 'px';
+
+  if (sbBookProgLine) {
+    sbBookProgLine.style.height = thickPx;
+    sbBookProgLine.style.backgroundColor = ink;
+  }
+  if (sbBookProgFill) {
+    sbBookProgFill.style.height = thickPx;
+    sbBookProgFill.style.backgroundColor = ink;
+  }
+  if (sbBookProgMarkers) {
+    sbBookProgMarkers.querySelectorAll('.sb-book-prog-marker').forEach((m) => {
+      m.style.width = thickPx;
+      m.style.height = markerHPx;
+      m.style.backgroundColor = ink;
+      m.style.transform = 'translateX(-50%) translateY(50%)';
+    });
+  }
+  if (sbBookProgCursor) {
+    const topW = Math.round(cursorSz * 1.33);
+    sbBookProgCursor.style.bottom = cursorBottom + 'px';
+    sbBookProgCursor.style.borderLeftWidth = cursorSz + 'px';
+    sbBookProgCursor.style.borderRightWidth = cursorSz + 'px';
+    sbBookProgCursor.style.borderTopWidth = topW + 'px';
+    sbBookProgCursor.style.borderTopColor = ink;
+    sbBookProgCursor.style.borderLeftColor = 'transparent';
+    sbBookProgCursor.style.borderRightColor = 'transparent';
+  }
 }
 
 function applyProgressBarLayout() {
@@ -2589,8 +2633,9 @@ function applyProgressBarLayout() {
     sbBookProg.style.display = bookVisible ? '' : 'none';
     sbBookProg.classList.toggle('sb-book-prog-chapters', bookChapters);
     if (bookChapters) {
-      applyChapterProgressBarStyle();
+      buildBookProgressMarkers();
     } else {
+      clearBookProgressChapterInlineStyles();
       sbBookProg.style.height = bookCfg.thickness + 'px';
     }
     if (bookCfg.position === 'top') {
@@ -2600,12 +2645,9 @@ function applyProgressBarLayout() {
       sbBookProg.style.top    = 'auto';
       sbBookProg.style.bottom = statusBarProgOffset('bottom');
     }
-    const lineEl = document.getElementById('sb-book-prog-line');
+    const lineEl = sbBookProgLine;
     if (lineEl) lineEl.hidden = !bookChapters;
     if (sbBookProgCursor) sbBookProgCursor.hidden = !bookChapters;
-    if (bookChapters) {
-      buildBookProgressMarkers();
-    }
   }
 
   if (sbChapProg) {
@@ -2724,6 +2766,7 @@ function updateBookProgressBar() {
 function buildBookProgressMarkers() {
   if (!prefs.statusBar.bookProgressBar.chapterMarkers) return;
   renderChapterMarkers(sbBookProgMarkers, 'sb-book-prog-marker');
+  applyChapterProgressBarStyle();
   updateBookProgressChapterRange();
 }
 
