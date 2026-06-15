@@ -46,7 +46,21 @@ await esbuild.build({
   logLevel: 'warning',
 });
 
-// Step 3: transpile sw.js (classic script — no import/export, just syntax lowering)
+// Step 3: bundle reader_v4.js with all its flow/ imports into one self-contained ESM file.
+// Reduces HTTP requests and avoids issues with many concurrent SW respondWith() calls
+// during module loading on old WebViews.
+console.log('[build] Bundling reader_v4.js ...');
+await esbuild.build({
+  entryPoints: [path.join(PUBLIC, 'js', 'reader_v4.js')],
+  outfile: path.join(DIST, 'js', 'reader_v4.js'),
+  allowOverwrite: true,
+  bundle: true,
+  format: 'esm',
+  target: 'chrome69',
+  logLevel: 'warning',
+});
+
+// Step 4: transpile sw.js (classic script — no import/export, just syntax lowering)
 const swSrc = path.join(DIST, 'sw.js');
 if (fs.existsSync(swSrc)) {
   await esbuild.build({

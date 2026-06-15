@@ -90,19 +90,20 @@ import { initI18n, t, initIconLangPicker } from '/js/i18n.js';
   });
 
   // Keep body height in sync with the visual viewport so keyboard doesn't cover inputs.
-  // On Chrome 69, 100vh doesn't shrink when keyboard appears but visualViewport.height does.
+  // On Chrome 69+, 100vh doesn't shrink when the keyboard appears but visualViewport.height does.
   if (window.visualViewport) {
     const setVH = () =>
       document.documentElement.style.setProperty('--login-vh', window.visualViewport.height + 'px');
     window.visualViewport.addEventListener('resize', setVH);
     setVH();
-  } else {
-    document.querySelectorAll('input').forEach(input => {
-      input.addEventListener('focus', () => {
-        setTimeout(() => input.scrollIntoView({ behavior: 'smooth', block: 'center' }), 400);
-      });
-    });
   }
+  // Always scroll the focused input into view — old WebViews may have visualViewport but
+  // its resize event fires unreliably, so the --login-vh approach alone isn't enough.
+  document.querySelectorAll('input').forEach(input => {
+    input.addEventListener('focus', () => {
+      setTimeout(() => input.scrollIntoView({ behavior: 'auto', block: 'center' }), 500);
+    });
+  });
 
   // ── Register ──────────────────────────────────────────────────────────────
   document.getElementById('register-form').addEventListener('submit', async (e) => {

@@ -1,0 +1,232 @@
+name: Build iOS IPA (Sideload / Free)
+
+# Builds an unsigned IPA that can be installed via Sideloadly or AltStore
+# using a free Apple ID. No Apple Developer account required.
+#
+# How to use:
+#   1. Go to Actions → "Build iOS IPA (Sideload / Free)" → Run workflow
+#   2. Wait ~30-40 minutes
+#   3. Download the IPA from the Artifacts section of the completed run
+#   4. Install with Sideloadly (sideloadly.io) on Windows using your free Apple ID
+#
+# Limitation: sideloaded apps signed with a free Apple ID expire after 7 days.
+# Re-install with Sideloadly to refresh. AltStore can auto-refresh over WiFi.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bundle_id:
+        description: 'Bundle ID (e.g. com.yourname.codexa) — use your planned final ID or leave as default'
+        required: false
+        default: 'com.test.codexa'
+      server_url:
+        description: 'Your Codexa server URL (e.g. https://books.yourserver.com). When set, the app loads directly from your server — enables offline mode on cold start.'
+        required: false
+        default: ''
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 60
+
+    defaults:
+      run:
+        working-directory: iOS
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Node dependencies
+        run: npm install
+
+      # ── Capacitor ────────────────────────────────────────────────────────────
+      - name: Inject configuration
+        run: |
+          BUNDLE_ID="${{ github.event.inputs.bundle_id }}"
+          sed -i '' "s/REPLACE_WITH_YOUR_BUNDLE_ID/$BUNDLE_ID/" capacitor.config.json
+          echo "Bundle ID: $BUNDLE_ID"
+          SERVER_URL="${{ github.event.inputs.server_url }}"
+          if [ -n "$SERVER_URL" ]; then
+            python3 -c "import json,sys;p='capacitor.config.json';d=json.loads(open(p).read());d.setdefault('server',{})['url']=sys.argv[1];open(p,'w').write(json.dumps(d,indent=2));print('Server URL:',sys.argv[1])" "$SERVER_URL"
+          else
+            echo "No server URL — app will show the setup screen on first launch"
+          fi
+
+      - name: Generate iOS project
+        run: npx cap add ios
+
+      - name: Sync web assets and plugins
+        run: npx cap sync ios
+
+      # ── Native patches ────────────────────────────────────────────────────────
+      - name: Set app icon
+        run: |
+          SRC="../../public/icons/android-chrome-512x512.png"
+          ICONSET="ios/App/App/Assets.xcassets/AppIcon.appiconset"
+          # Generate every required icon size from the 512x512 source using macOS sips
+          for SZ in 20 29 40 58 60 76 80 87 120 152 167 180 1024; do
+            sips -z $SZ $SZ "$SRC" --out "$ICONSET/icon-${SZ}.png" > /dev/null
+          done
+          # Overwrite Contents.json so Xcode picks up our icons
+          cat > "$ICONSET/Contents.json" << 'JSONEOF'
+          {
+            "images": [
+              {"idiom":"iphone","size":"20x20","scale":"2x","filename":"icon-40.png"},
+              {"idiom":"iphone","size":"20x20","scale":"3x","filename":"icon-60.png"},
+              {"idiom":"iphone","size":"29x29","scale":"1x","filename":"icon-29.png"},
+              {"idiom":"iphone","size":"29x29","scale":"2x","filename":"icon-58.png"},
+              {"idiom":"iphone","size":"29x29","scale":"3x","filename":"icon-87.png"},
+              {"idiom":"iphone","size":"40x40","scale":"2x","filename":"icon-80.png"},
+              {"idiom":"iphone","size":"40x40","scale":"3x","filename":"icon-120.png"},
+              {"idiom":"iphone","size":"60x60","scale":"2x","filename":"icon-120.png"},
+              {"idiom":"iphone","size":"60x60","scale":"3x","filename":"icon-180.png"},
+              {"idiom":"ipad","size":"20x20","scale":"1x","filename":"icon-20.png"},
+              {"idiom":"ipad","size":"20x20","scale":"2x","filename":"icon-40.png"},
+              {"idiom":"ipad","size":"29x29","scale":"1x","filename":"icon-29.png"},
+              {"idiom":"ipad","size":"29x29","scale":"2x","filename":"icon-58.png"},
+              {"idiom":"ipad","size":"40x40","scale":"1x","filename":"icon-40.png"},
+              {"idiom":"ipad","size":"40x40","scale":"2x","filename":"icon-80.png"},
+              {"idiom":"ipad","size":"76x76","scale":"1x","filename":"icon-76.png"},
+              {"idiom":"ipad","size":"76x76","scale":"2x","filename":"icon-152.png"},
+              {"idiom":"ipad","size":"83.5x83.5","scale":"2x","filename":"icon-167.png"},
+              {"idiom":"ios-marketing","size":"1024x1024","scale":"1x","filename":"icon-1024.png"}
+            ],
+            "info":{"version":1,"author":"xcode"}
+          }
+          JSONEOF
+
+      - name: Patch MainViewController — keep screen on, volume key navigation
+        run: |
+          cat > ios/App/App/MainViewController.swift << 'SWEOF'
+          import UIKit
+          import Capacitor
+          import MediaPlayer
+          import AVFoundation
+
+          class MainViewController: CAPBridgeViewController {
+              private var volumeView: MPVolumeView!
+              private var lastVolume: Float = 0.5
+
+              override func viewDidLoad() {
+                  super.viewDidLoad()
+                  UIApplication.shared.isIdleTimerDisabled = true
+                  volumeView = MPVolumeView(frame: CGRect(x: -100, y: -100, width: 1, height: 1))
+                  view.addSubview(volumeView)
+                  let audioSession = AVAudioSession.sharedInstance()
+                  try? audioSession.setCategory(.ambient, mode: .default, options: [])
+                  try? audioSession.setActive(true)
+                  setSystemVolume(0.5)
+                  lastVolume = 0.5
+                  NotificationCenter.default.addObserver(
+                      self,
+                      selector: #selector(volumeChanged(_:)),
+                      name: NSNotification.Name(rawValue: "AVSystemController_SystemVolumeDidChangeNotification"),
+                      object: nil
+                  )
+              }
+
+              @objc func volumeChanged(_ notification: NSNotification) {
+                  guard let userInfo = notification.userInfo,
+                        let newVolume = userInfo["AVSystemController_AudioVolumeNotificationParameter"] as? Float
+                  else { return }
+                  if newVolume > lastVolume || newVolume == 1.0 {
+                      self.webView?.evaluateJavaScript(
+                          "window.dispatchEvent(new CustomEvent('volumeUp'));",
+                          completionHandler: nil
+                      )
+                  } else if newVolume < lastVolume || newVolume == 0.0 {
+                      self.webView?.evaluateJavaScript(
+                          "window.dispatchEvent(new CustomEvent('volumeDown'));",
+                          completionHandler: nil
+                      )
+                  }
+                  DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                      self.setSystemVolume(0.5)
+                      self.lastVolume = 0.5
+                  }
+              }
+
+              private func setSystemVolume(_ value: Float) {
+                  if let slider = volumeView.subviews.first(where: { $0 is UISlider }) as? UISlider {
+                      slider.value = value
+                  }
+              }
+
+              deinit {
+                  NotificationCenter.default.removeObserver(self)
+              }
+          }
+          SWEOF
+
+      - name: Configure Info.plist — fullscreen, hide status bar
+        run: |
+          PLIST="ios/App/App/Info.plist"
+          add_or_set() {
+            /usr/libexec/PlistBuddy -c "Add :$1 $2 $3" "$PLIST" 2>/dev/null \
+              || /usr/libexec/PlistBuddy -c "Set :$1 $3" "$PLIST"
+          }
+          add_or_set UIStatusBarHidden                        bool true
+          add_or_set UIViewControllerBasedStatusBarAppearance bool false
+          add_or_set UIRequiresFullScreen                     bool true
+
+      - name: Set version numbers
+        run: |
+          BUILD_NUM=$(date -u +%Y%m%d%H%M)
+          PBXPROJ="ios/App/App.xcodeproj/project.pbxproj"
+          sed -i '' "s/CURRENT_PROJECT_VERSION = [^;]*/CURRENT_PROJECT_VERSION = $BUILD_NUM/g" "$PBXPROJ"
+          sed -i '' "s/MARKETING_VERSION = [^;]*/MARKETING_VERSION = 1.0.0/g" "$PBXPROJ"
+          echo "Build number: $BUILD_NUM"
+
+      # ── CocoaPods ─────────────────────────────────────────────────────────────
+      - name: Pod install
+        run: |
+          cd ios/App
+          pod install --repo-update
+
+      # ── Build (code signing fully disabled) ───────────────────────────────────
+      - name: Build app (no code signing)
+        run: |
+          xcodebuild \
+            -workspace ios/App/App.xcworkspace \
+            -scheme App \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build/derived \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            DEVELOPMENT_TEAM="" \
+            build \
+            -quiet
+
+      # ── Package as IPA ────────────────────────────────────────────────────────
+      - name: Package IPA
+        run: |
+          APP=$(find build/derived/Build/Products/Release-iphoneos \
+                  -maxdepth 1 -name "*.app" | head -1)
+
+          if [ -z "$APP" ]; then
+            echo "ERROR: .app not found in derived data"
+            find build/derived -name "*.app" | head -10
+            exit 1
+          fi
+
+          echo "Packaging: $APP"
+          mkdir -p build/Payload
+          cp -r "$APP" build/Payload/
+          cd build
+          zip -qr Codexa-sideload.ipa Payload/
+          echo "IPA size: $(du -sh Codexa-sideload.ipa | cut -f1)"
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Codexa-sideload-${{ github.run_number }}
+          path: iOS/build/Codexa-sideload.ipa
+          retention-days: 30

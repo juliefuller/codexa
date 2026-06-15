@@ -151,6 +151,15 @@ html, body {
 [data-reader-eink] .nav-icon-fullscreen { content: url('/images/fullscreen_bw.svg'); }
 [data-reader-eink] img[src="/images/fullscreen_exit.svg"] { content: url('/images/fullscreen_exit_bw.svg'); }
 
+/* Annotation toolbar icons: always white (toolbar background provides contrast) */
+#annot-toolbar .nav-icon { filter: brightness(0) invert(1); }
+/* E-ink: restore natural black ink, use _bw variants */
+[data-reader-eink] #annot-toolbar .nav-icon { filter: none; }
+[data-reader-eink] .nav-icon-add-note   { content: url('/images/add_note_bw.svg'); }
+[data-reader-eink] .nav-icon-dictionary { content: url('/images/dictionary_bw.svg'); }
+[data-reader-eink] .nav-icon-close      { content: url('/images/close_bw.svg'); }
+[data-reader-eink] .nav-icon-copy       { content: url('/images/copy_bw.svg'); }
+
 /* Manual sync button states */
 @keyframes br-spin { to { transform: rotate(360deg); } }
 #btn-sync.btn-sync-busy .nav-icon-sync { animation: br-spin 0.75s linear infinite; }
@@ -183,6 +192,13 @@ html, body {
 [data-reader-eink] *::after {
   transition: none !important;
   animation: none !important;
+}
+/* Loading spinner stays animated even in e-ink mode.
+   Chrome throttles setTimeout/Promise callbacks when it detects no active CSS
+   animation (rendering-idle heuristic). Keeping the spinner animated prevents
+   this throttling from stalling the book loader on old e-ink WebViews. */
+[data-reader-eink] #loading-overlay .spinner {
+  animation: spin .6s linear infinite !important;
 }
 /* E-ink mode: toast colours → black-and-white */
 [data-reader-eink] .toast-success,
@@ -263,6 +279,88 @@ html, body {
 .annotation-delete-btn { flex-shrink: 0; opacity: .5; font-size: .9rem; }
 .annotation-delete-btn:hover { opacity: 1; }
 
+/* Sleep timer backdrop — sits above reading iframe, below the panel */
+.sleep-timer-backdrop { display: none; position: fixed; inset: 0; z-index: 317; background: transparent; }
+.sleep-timer-backdrop.open { display: block; }
+
+/* Sleep timer panel */
+.sleep-timer-panel {
+  position: fixed; bottom: 0; left: 0; right: 0; z-index: 319;
+  background: var(--color-surface); border-top: 1px solid var(--color-border);
+  border-radius: 14px 14px 0 0;
+  padding: 1rem 1rem calc(1rem + var(--sab, 0px));
+  display: flex; flex-direction: column; gap: .75rem;
+  transform: translateY(100%); transition: transform .22s ease;
+}
+.sleep-timer-panel.open { transform: translateY(0); }
+.sleep-timer-presets {
+  display: flex; gap: .5rem; flex-wrap: wrap;
+}
+.sleep-preset-btn {
+  padding: .4rem .85rem; border-radius: 999px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-2, var(--color-surface));
+  color: var(--color-text); font-size: .85rem; cursor: pointer;
+  transition: background .15s, border-color .15s;
+}
+.sleep-preset-btn:hover { background: var(--color-accent); color: #fff; border-color: var(--color-accent); }
+.sleep-timer-actions {
+  display: flex; flex-direction: column; gap: .4rem;
+}
+.sleep-action-label {
+  display: flex; align-items: center; gap: .5rem;
+  font-size: .85rem; cursor: pointer; color: var(--color-text);
+}
+.sleep-timer-cancel-btn { align-self: flex-start; }
+.sleep-timer-remaining {
+  font-size: 2rem; font-weight: 700; letter-spacing: .05em;
+  color: var(--color-accent); text-align: center;
+}
+/* Active badge on the sleep timer button */
+.sleep-timer-badge {
+  position: absolute; top: 2px; right: 2px;
+  background: var(--color-accent); color: #fff;
+  font-size: .6rem; font-weight: 700; line-height: 1;
+  padding: 2px 4px; border-radius: 999px; pointer-events: none;
+}
+.sleep-timer-badge.hidden { display: none; }
+#btn-sleep-timer { position: relative; }
+#btn-sleep-timer.sleep-timer-active img { opacity: .7; }
+/* Dim overlay */
+.sleep-dim-overlay {
+  position: fixed; inset: 0; z-index: 10000;
+  background: rgba(0,0,0,.92);
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+}
+.sleep-dim-overlay::after {
+  content: attr(data-hint);
+  color: rgba(255,255,255,.35); font-size: .85rem;
+}
+
+/* ── Floating navigation button ──────────────────────────────────────────────── */
+.float-nav-btn {
+  position: fixed; z-index: 250;
+  width: 52px; height: 52px; border-radius: 50%;
+  background: rgba(0, 0, 0, .28);
+  border: 2px solid rgba(255, 255, 255, .35);
+  touch-action: none; user-select: none;
+  display: flex; align-items: center; justify-content: center;
+  transition: background .15s;
+}
+.float-nav-btn::after {
+  content: '›';
+  color: rgba(255, 255, 255, .85);
+  font-size: 1.6rem; line-height: 1; pointer-events: none;
+}
+.float-nav-btn:active { background: rgba(0, 0, 0, .5); }
+/* E-ink: outline only, no fill */
+[data-reader-eink] .float-nav-btn {
+  background: transparent;
+  border: 2px solid rgba(0, 0, 0, .45);
+}
+[data-reader-eink] .float-nav-btn::after { color: rgba(0, 0, 0, .55); }
+
 /* Shared annotation backdrop */
 .annot-backdrop { display: none; position: fixed; top: 0; right: 0; bottom: 0; left: 0; z-index: 318; }
 .annot-backdrop.open { display: block; }
@@ -315,6 +413,19 @@ html, body {
   background: transparent; color: var(--color-text);
   min-height: 100px;
 }
+.annot-note-colors {
+  display: flex; gap: .45rem; padding: .6rem 1rem .2rem;
+}
+.annot-note-color-btn {
+  width: 28px; height: 28px; border-radius: 50%;
+  border: 2px solid transparent; cursor: pointer; flex-shrink: 0;
+}
+.annot-note-color-btn[data-color="yellow"] { background: rgba(255,204,0,.9); }
+.annot-note-color-btn[data-color="green"]  { background: rgba(0,210,110,.85); }
+.annot-note-color-btn[data-color="blue"]   { background: rgba(30,160,255,.85); }
+.annot-note-color-btn[data-color="pink"]   { background: rgba(255,80,130,.85); }
+.annot-note-color-btn.active,
+.annot-note-color-btn:hover { border-color: var(--color-text); }
 .annot-note-footer {
   display: flex; justify-content: flex-end;
   padding: .5rem 1rem calc(.5rem + var(--sab, 0px));
@@ -455,6 +566,7 @@ html, body {
 #search-sidebar,
 #bookmarks-sidebar,
 #settings-panel,
+.sleep-timer-panel,
 .dict-popup {
   box-shadow: none;
   pointer-events: none;
@@ -468,6 +580,7 @@ body.page-gap-shadow-on #toc-sidebar,
 body.page-gap-shadow-on #search-sidebar,
 body.page-gap-shadow-on #bookmarks-sidebar,
 body.page-gap-shadow-on #settings-panel,
+body.page-gap-shadow-on .sleep-timer-panel,
 body.page-gap-shadow-on .dict-popup {
   box-shadow: var(--shadow);
 }
@@ -480,6 +593,7 @@ body.page-gap-shadow-on .dict-popup {
 #search-sidebar.open,
 #bookmarks-sidebar.open,
 #settings-panel.open,
+.sleep-timer-panel.open,
 .dict-popup.open {
   box-shadow: var(--shadow);
   pointer-events: auto;
@@ -1331,6 +1445,21 @@ input[type="range"]::-moz-range-thumb {
   color: #fff;
 }
 
+/* E-ink reader: settings tab icons — convert emoji to grayscale */
+[data-reader-eink] .settings-tab-icon {
+  filter: grayscale(1);
+}
+
+/* E-ink reader: theme selection buttons — disabled (theme irrelevant in e-ink) */
+[data-reader-eink] .theme-btn {
+  background: #e8e8e8 !important;
+  color: #888 !important;
+  border-color: #bbb !important;
+  pointer-events: none;
+  cursor: not-allowed;
+  opacity: .6;
+}
+
 /* E-ink reader: annotation toolbar action buttons */
 [data-reader-eink] #annot-toolbar .btn-icon-sm {
   background: #fff;
@@ -1416,8 +1545,11 @@ input[type="range"]::-moz-range-thumb {
   left:  calc(1.2rem + var(--edge-pad-left,  0px));
   right: calc(1.2rem + var(--edge-pad-right, 0px));
   z-index: 4;
-  /* Ink color scoped here only — does not affect status-bar text */
-  --sb-prog-ink: var(--color-accent);
+  --sb-prog-ink: var(--color-text-muted);
+  --sb-prog-line-opacity: 0.3;
+  --sb-prog-marker-opacity: 0.48;
+  --sb-prog-fill-opacity: 0.52;
+  --sb-prog-cursor-opacity: 0.62;
 }
 #sb-book-prog.sb-book-prog-chapters .sb-book-prog-track {
   overflow: visible;
@@ -1429,7 +1561,7 @@ input[type="range"]::-moz-range-thumb {
   bottom: 5px;
   height: 1px;
   background: var(--color-text-muted);
-  opacity: 0.45;
+  opacity: var(--sb-prog-line-opacity);
   pointer-events: none;
   z-index: 1;
 }
@@ -1449,11 +1581,11 @@ input[type="range"]::-moz-range-thumb {
   position: absolute;
   bottom: 0;
   transform: translateX(-50%) translateY(50%);
-  width: 2px;
-  height: 11px;
+  width: 1px;
+  height: 6px;
   background: var(--sb-prog-ink);
-  opacity: 0.92;
-  border-radius: 0.5px;
+  opacity: var(--sb-prog-marker-opacity);
+  border-radius: 0;
   pointer-events: none;
 }
 #sb-book-prog.sb-book-prog-chapters #sb-book-prog-fill {
@@ -1462,31 +1594,40 @@ input[type="range"]::-moz-range-thumb {
   bottom: 5px;
   height: 1px;
   background: var(--sb-prog-ink);
-  opacity: 0.95;
+  opacity: var(--sb-prog-fill-opacity);
   z-index: 2;
 }
 .sb-book-prog-cursor {
   position: absolute;
-  bottom: 8px;
+  bottom: 7px;
   transform: translateX(-50%);
   width: 0;
   height: 0;
-  border-left: 4px solid transparent;
-  border-right: 4px solid transparent;
-  border-top: 5px solid var(--sb-prog-ink);
+  border-left: 3px solid transparent;
+  border-right: 3px solid transparent;
+  border-top: 4px solid var(--sb-prog-ink);
+  opacity: var(--sb-prog-cursor-opacity);
   pointer-events: none;
   z-index: 4;
 }
 
-/* E-ink: crisp black ticks on a faint baseline */
+/* E-ink: hairline baseline + faint ticks (match .sb-separator weight, not body text) */
 [data-reader-eink] #sb-book-prog.sb-book-prog-chapters {
-  --sb-prog-ink: #000;
-}
-[data-reader-eink] #sb-book-prog.sb-book-prog-chapters .sb-book-prog-line {
-  opacity: 0.25;
+  --sb-prog-line-opacity: 0.22;
+  --sb-prog-marker-opacity: 0.3;
+  --sb-prog-fill-opacity: 0.38;
+  --sb-prog-cursor-opacity: 0.48;
 }
 [data-reader-eink] .sb-book-prog-marker {
-  opacity: 1;
+  width: 1px;
+  transform: translateX(-50%) translateY(50%) scaleX(0.5);
+}
+
+/* Custom palette uses full text as accent — keep chapter bar extra light */
+body[data-reader-theme="custom"] #sb-book-prog.sb-book-prog-chapters {
+  --sb-prog-marker-opacity: 0.4;
+  --sb-prog-fill-opacity: 0.44;
+  --sb-prog-cursor-opacity: 0.54;
 }
 /* ── Jump-to-% panel: chapter nav buttons ─────────────── */
 .sb-chap-nav-btn {

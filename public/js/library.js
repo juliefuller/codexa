@@ -433,7 +433,6 @@ async function openInfoModal(book) {
   let fullBook = book;
   try {
     fullBook = await apiFetch(`/books/${book.id}`);
-    // Cache the full metadata for offline info-dialog display
     saveBookMeta({ ...fullBook, percentage: book.percentage || 0 }).catch(() => {});
   } catch { /* use cached */ }
 
@@ -445,117 +444,166 @@ async function openInfoModal(book) {
     } catch { /* ignore */ }
   }
 
-  const allShelves = getShelves();
-  const coverHtml  = fullBook.cover_path
-    ? `<img class="info-modal-cover info-modal-cover-clickable" src="/covers/${fullBook.cover_path}" alt="" />`
-    : `<div class="info-modal-cover info-modal-cover-ph">📖</div>`;  
-
-  const shelvesHtml = isOfflineMode ? '' : (allShelves.length
-    ? `<div class="info-modal-section-title">${t('library.info_shelves')}</div>
-       <div class="info-modal-shelves">${allShelves.map(s => `
-         <label class="info-modal-shelf-row">
-           <input type="checkbox" class="shelf-chk" value="${s.id}" ${bookShelfIds.has(s.id) ? 'checked' : ''} />
-           <span>${escHtml(s.name)}</span>
-           <span class="shelf-book-count">(${s.book_count})</span>
-         </label>`).join('')}
-       </div>`
-    : `<div style="font-size:.82rem;color:var(--color-text-muted);margin-top:.75rem">${t('library.info_no_shelves')}</div>`);
-
-  // Use the list-level book object for percentage — fullBook (from GET /api/books/:id)
-  // does not join reading_progress, so it always returns 0.
+  const allShelves  = getShelves();
+  const token       = encodeURIComponent(localStorage.getItem('br_token') || '');
   const progressPct = Math.round((book.percentage || 0) * 100);
-  const progressHtml = progressPct > 0 ? `
-    <div class="info-modal-section-title" style="margin-top:1rem">${t('library.info_progress') || 'Reading Progress'}</div>
-    <div class="info-modal-progress-row">
-      <div class="info-modal-progress-bar-wrap">
-        <div class="info-modal-progress-bar-fill" style="width:${progressPct}%"></div>
-      </div>
-      <span class="info-modal-progress-pct">${progressPct}%</span>
-      ${isOfflineMode ? '' : `<button class="btn btn-secondary btn-sm" id="info-modal-reset-progress" style="margin-left:auto;white-space:nowrap">${t('library.btn_reset_progress') || 'Reset to 0%'}</button>`}
-    </div>` : '';
 
-  const descTitleHtml   = fullBook.description
-    ? `<div class="info-modal-section-title" style="margin-top:1rem">${t('library.info_desc')}</div>`
-    : '';
-  const descContentHtml = fullBook.description
-    ? `<div class="info-modal-desc">${sanitizeHtml(fullBook.description)}</div>`
-    : '';
+  // ── HTML helpers ─────────────────────────────────────────────────────────────
+  const fmtDate = (ts) => ts ? new Date(ts * 1000).toLocaleDateString() : '—';
+  const fmtTime = (secs) => {
+    if (!secs) return '0m';
+    const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60);
+    return h ? `${h}h ${m}m` : `${m}m`;
+  };
+  const colorDot = (c) => {
+    const map = { yellow: '#f5c518', green: '#4caf50', blue: '#2196f3', pink: '#e91e63' };
+    return `<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${map[c] || map.yellow};flex-shrink:0"></span>`;
+  };
 
-  const genresHtml = fullBook.genres
-    ? `<div class="info-modal-genres">${fullBook.genres.split(',').map(g => g.trim()).filter(Boolean).map(g => `<span class="genre-pill">${escHtml(g)}</span>`).join('')}</div>`
-    : '';
-
-  const inlineMetaParts = [
-    fullBook.publisher && `<span><span class="info-meta-label">${t('library.info_publisher')}:</span>\u00a0${escHtml(fullBook.publisher)}</span>`,
-    fullBook.language  && `<span><span class="info-meta-label">${t('library.info_language')}:</span>\u00a0${escHtml(fullBook.language)}</span>`,
-    fullBook.pages     && `<span><span class="info-meta-label">${t('library.info_pages')}:</span>\u00a0${escHtml(fullBook.pages)}</span>`,
-    fullBook.isbn      && `<span><span class="info-meta-label">${t('library.info_isbn')}:</span>\u00a0${escHtml(fullBook.isbn)}</span>`,
+  const metaRows = [
+    fullBook.publisher      && [t('library.info_publisher'),   escHtml(fullBook.publisher)],
+    fullBook.language       && [t('library.info_language'),    escHtml(fullBook.language)],
+    fullBook.pages          && [t('library.info_pages'),       escHtml(String(fullBook.pages))],
+    fullBook.isbn           && [t('library.info_isbn'),        escHtml(fullBook.isbn)],
+    fullBook.file_size      && [t('library.info_file_size'),   formatSize(fullBook.file_size)],
+    fullBook.added_at       && [t('library.info_added'),       fmtDate(fullBook.added_at)],
+    fullBook.last_opened_at && [t('library.info_last_opened'), fmtDate(fullBook.last_opened_at)],
   ].filter(Boolean);
-  const inlineMetaHtml = inlineMetaParts.length
-    ? `<div class="info-modal-extra">${inlineMetaParts.join('')}</div>`
-    : '';
 
-  const token    = encodeURIComponent(localStorage.getItem('br_token') || '');
   const backdrop = document.createElement('div');
   backdrop.id        = 'book-info-modal';
   backdrop.className = 'modal-backdrop';
   backdrop.innerHTML = `
     <div class="modal info-modal" role="dialog" aria-modal="true">
       <button class="modal-close" id="info-modal-close" aria-label="${t('common.close')}">&times;</button>
-      <div class="info-modal-top">
-        ${coverHtml}
-        <div class="info-modal-meta">
+
+      <div class="info-modal-header">
+        ${fullBook.cover_path
+          ? `<img class="info-modal-cover info-modal-cover-clickable" src="/covers/${fullBook.cover_path}" alt="" />`
+          : `<div class="info-modal-cover info-modal-cover-ph">\u{1F4D6}</div>`}
+        <div class="info-modal-hero">
           <h3 class="info-modal-title">${escHtml(fullBook.title)}</h3>
           <div class="info-modal-author">${escHtml(fullBook.author || t('library.unknown_author'))}</div>
           ${fullBook.series_name ? `<div class="info-modal-series"><button class="series-filter-btn" data-series="${escHtml(fullBook.series_name)}" title="${t('library.series_filter_title')}">${escHtml(fullBook.series_name)}${fullBook.series_number ? ` #${escHtml(fullBook.series_number)}` : ''}</button></div>` : ''}
-          ${fullBook.file_size ? `<div class="info-modal-filesize">${formatSize(fullBook.file_size)}</div>` : ''}
-          ${genresHtml}
-          ${inlineMetaHtml}
+          ${fullBook.genres ? `<div class="info-modal-genres" style="margin-top:.3rem">${fullBook.genres.split(',').map(g => g.trim()).filter(Boolean).map(g => `<span class="genre-pill">${escHtml(g)}</span>`).join('')}</div>` : ''}
+          <div class="info-modal-actions">
+            <a class="imt-action-btn imt-btn-read" href="/readerv4.html?id=${fullBook.id}" title="${t('library.btn_read')}"><img src="/images/read.svg" class="nav-icon nav-icon-read" alt="${t('library.btn_read')}"></a>
+            <a class="imt-action-btn" href="/readerv4.html?id=${fullBook.id}&peek=1" title="${t('library.btn_peek')}"><img src="/images/peek.svg" class="nav-icon nav-icon-peek" alt="${t('library.btn_peek')}"></a>
+            ${isOfflineMode ? '' : `<a class="imt-action-btn" href="/api/books/${fullBook.id}/file?download=1&token=${token}" download title="${t('library.btn_download')}"><img src="/images/download.svg" class="nav-icon nav-icon-download" alt="${t('library.btn_download')}"></a>`}
+            ${isOfflineMode ? '' : `<button class="imt-action-btn imt-delete-btn" id="info-modal-delete" title="${t('library.btn_del_book')}"><img src="/images/delete.svg" class="nav-icon nav-icon-delete" alt="${t('library.btn_del_book')}"></button>`}
+          </div>
         </div>
       </div>
-      ${progressHtml}
-      ${descTitleHtml}
-      ${descContentHtml ? `<div class="info-modal-body">${descContentHtml}</div>` : ''}
-      ${shelvesHtml}
-      <div class="modal-footer info-modal-footer">
-        ${isOfflineMode ? '' : `<button class="btn btn-danger" id="info-modal-delete"><img src="/images/delete.svg" class="nav-icon nav-icon-delete" alt=""> ${t('library.btn_del_book')}</button>`}
-        ${isOfflineMode ? '' : `<a class="btn btn-secondary" id="info-modal-download" href="/api/books/${fullBook.id}/file?download=1&token=${token}" download><img src="/images/download.svg" class="nav-icon nav-icon-download" alt=""> ${t('library.btn_download')}</a>`}
-        <a class="btn btn-read" id="info-modal-read" href="/readerv4.html?id=${fullBook.id}"><img src="/images/read.svg" class="nav-icon nav-icon-read" alt=""> ${t('library.btn_read')}</a>
-        <a class="btn btn-secondary" id="info-modal-peek" href="/readerv4.html?id=${fullBook.id}&peek=1"><img src="/images/peek.svg" class="nav-icon nav-icon-peek" alt=""> ${t('library.btn_peek')}</a>
-        ${isOfflineMode ? '' : `<button class="btn btn-primary" id="info-modal-save"><img src="/images/save.svg" class="nav-icon nav-icon-save" alt=""> ${t('library.btn_save_shelves')}</button>`}
+
+      <div class="info-modal-tabs" role="tablist">
+        <button class="imt-tab active" data-tab="details" role="tab">${t('library.tab_details')}</button>
+        ${isOfflineMode ? '' : `<button class="imt-tab" data-tab="shelves" role="tab">${t('library.tab_shelves')}</button>`}
+        ${isOfflineMode ? '' : `<button class="imt-tab" data-tab="kosync" role="tab">${t('library.tab_kosync')}</button>`}
+        <button class="imt-tab" data-tab="reading" role="tab">${t('library.tab_reading')}</button>
+      </div>
+
+      <div class="info-modal-tab-content">
+
+        <div class="imt-panel" id="imt-details">
+          ${progressPct > 0 ? `
+          <div class="info-modal-section-title">${t('library.info_progress')}</div>
+          <div class="info-modal-progress-row">
+            <div class="info-modal-progress-bar-wrap"><div class="info-modal-progress-bar-fill" style="width:${progressPct}%"></div></div>
+            <span class="info-modal-progress-pct">${progressPct}%</span>
+            ${isOfflineMode ? '' : `<button class="btn btn-secondary btn-sm" id="info-modal-reset-progress" style="margin-left:auto">${t('library.btn_reset_progress')}</button>`}
+          </div>` : ''}
+          ${metaRows.length ? `
+          <div class="imt-meta-grid">
+            ${metaRows.map(([label, val]) => `<div class="imt-meta-pair"><span class="imt-meta-label">${label}</span><span>${val}</span></div>`).join('')}
+          </div>` : ''}
+          ${fullBook.description ? `
+          <div class="info-modal-section-title" style="margin-top:.75rem">${t('library.info_desc')}</div>
+          <div class="info-modal-desc">${sanitizeHtml(fullBook.description)}</div>` : ''}
+        </div>
+
+        ${isOfflineMode ? '' : `
+        <div class="imt-panel" id="imt-shelves" style="display:none">
+          ${allShelves.length
+            ? `<div class="info-modal-shelves">${allShelves.map(s => `
+                <label class="info-modal-shelf-row">
+                  <input type="checkbox" class="shelf-chk" value="${s.id}" ${bookShelfIds.has(s.id) ? 'checked' : ''} />
+                  <span>${escHtml(s.name)}</span>
+                  <span class="shelf-book-count">(${s.book_count})</span>
+                </label>`).join('')}
+              </div>
+              <div style="margin-top:.75rem">
+                <button class="btn btn-primary btn-sm" id="info-modal-save">${t('library.btn_save_shelves')}</button>
+              </div>`
+            : `<div class="imt-empty">${t('library.info_no_shelves')}</div>`}
+        </div>`}
+
+        ${isOfflineMode ? '' : `
+        <div class="imt-panel" id="imt-kosync" style="display:none">
+          <div class="info-modal-kosync-body" style="padding-top:.25rem">
+            <div class="info-modal-kosync-row">
+              <span class="info-modal-kosync-label">${t('library.kosync_computed_md5')}</span>
+              <span class="info-modal-kosync-value" id="ik-md5">${escHtml(fullBook.file_hash_md5 || '—')}</span>
+            </div>
+            <div class="info-modal-kosync-row" id="ik-override-row" style="${fullBook.kosync_hash ? '' : 'display:none'}">
+              <span class="info-modal-kosync-label">${t('library.kosync_override')}</span>
+              <span class="info-modal-kosync-value" id="ik-override-val">${escHtml(fullBook.kosync_hash || '')}</span>
+              <span class="info-modal-kosync-badge">${t('library.kosync_active')}</span>
+            </div>
+            <div class="info-modal-kosync-edit">
+              <input class="info-modal-kosync-input" id="ik-input" maxlength="32" spellcheck="false" autocomplete="off"
+                placeholder="${t('library.kosync_placeholder')}"
+                value="${escHtml(fullBook.kosync_hash || fullBook.file_hash_md5 || '')}" />
+              <div class="info-modal-kosync-error" id="ik-error" style="display:none"></div>
+              <div class="info-modal-kosync-btns">
+                <button class="btn btn-primary btn-sm" id="ik-save">${t('library.kosync_save')}</button>
+                <button class="btn btn-secondary btn-sm" id="ik-clear" style="${fullBook.kosync_hash ? '' : 'display:none'}">${t('library.kosync_clear')}</button>
+              </div>
+            </div>
+            <div class="info-modal-kosync-divider"></div>
+            <div style="font-size:.82rem;font-weight:600;margin-bottom:.35rem">${t('library.kosync_replace_epub')}</div>
+            <div class="info-modal-kosync-opds-row">
+              <select class="info-modal-kosync-server-select" id="ik-server">
+                <option value="">${t('library.kosync_loading_servers')}</option>
+              </select>
+              <input class="info-modal-kosync-search-input" id="ik-q"
+                placeholder="${t('library.kosync_search_placeholder')}"
+                value="${escHtml(fullBook.title || '')}" />
+              <button class="btn btn-secondary btn-sm" id="ik-search">${t('library.kosync_search')}</button>
+            </div>
+            <div class="info-modal-kosync-results" id="ik-results"></div>
+          </div>
+        </div>`}
+
+        <div class="imt-panel" id="imt-reading" style="display:none">
+          <div id="imt-reading-inner"><div class="imt-empty" style="padding:1rem 0">Loading…</div></div>
+        </div>
+
       </div>
     </div>`;
 
   document.body.appendChild(backdrop);
 
-  // Scroll-fade mask on the body section
-  const bodyEl = backdrop.querySelector('.info-modal-body');
-  if (bodyEl) {
-    const updateFade = () => {
-      const { scrollTop, scrollHeight, clientHeight } = bodyEl;
-      const canUp   = scrollTop > 2;
-      const canDown = scrollTop + clientHeight < scrollHeight - 2;
-      let g;
-      if      (canUp && canDown) g = 'linear-gradient(to bottom, transparent 0%, black 10%, black 88%, transparent 100%)';
-      else if (canUp)            g = 'linear-gradient(to bottom, transparent 0%, black 10%)';
-      else if (canDown)          g = 'linear-gradient(to bottom, black 0%, black 88%, transparent 100%)';
-      else                       g = 'none';
-      bodyEl.style.maskImage       = g;
-      bodyEl.style.webkitMaskImage = g;
-    };
-    bodyEl.addEventListener('scroll', updateFade, { passive: true });
-    updateFade();
-  }
+  // ── Tab switching ─────────────────────────────────────────────────────────────
+  let readingLoaded = false;
 
-  // Prevent mouse-wheel and touch-scroll from leaking through to the page behind the backdrop.
-  // Allow wheel/touch when it's inside the description body (which handles its own scroll).
+  const switchTab = (id) => {
+    backdrop.querySelectorAll('.imt-tab').forEach(b => b.classList.toggle('active', b.dataset.tab === id));
+    backdrop.querySelectorAll('.imt-panel').forEach(p => { p.style.display = p.id === `imt-${id}` ? '' : 'none'; });
+    if (id === 'reading' && !readingLoaded) { readingLoaded = true; loadReadingTab(); }
+  };
+
+  backdrop.querySelectorAll('.imt-tab').forEach(btn => {
+    btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+  });
+
+  // ── Prevent wheel scroll from leaking through the semi-transparent backdrop area
+  const tabContent = backdrop.querySelector('.info-modal-tab-content');
   backdrop.addEventListener('wheel', e => {
-    if (!bodyEl || !bodyEl.contains(e.target)) e.preventDefault();
-  }, { passive: false });
-  backdrop.addEventListener('touchmove', e => {
-    if (e.target === backdrop) e.preventDefault();
+    if (tabContent?.contains(e.target)) return;
+    e.preventDefault();
   }, { passive: false });
 
+  // ── Close ─────────────────────────────────────────────────────────────────────
   const close = () => {
     backdrop.remove();
     document.removeEventListener('keydown', onKeyDown);
@@ -565,18 +613,26 @@ async function openInfoModal(book) {
   backdrop.querySelector('#info-modal-close').addEventListener('click', close);
   backdrop.addEventListener('click', e => { if (e.target === backdrop) close(); });
 
-  if (fullBook.cover_path) {
-    backdrop.querySelector('.info-modal-cover-clickable')?.addEventListener('click', e => {
-      e.stopPropagation();
-      openCoverPreview(fullBook);
-    });
-  }
+  // ── Header action handlers ────────────────────────────────────────────────────
+  backdrop.querySelector('.info-modal-cover-clickable')?.addEventListener('click', e => {
+    e.stopPropagation();
+    openCoverPreview(fullBook);
+  });
 
   backdrop.querySelector('.series-filter-btn')?.addEventListener('click', () => {
     close();
     filterBySeries(fullBook.series_name);
   });
 
+  backdrop.querySelector('#info-modal-delete')?.addEventListener('click', () => {
+    close();
+    confirmDialog(
+      `${t('library.confirm_del_book', { title: escHtml(fullBook.title) })}`,
+      () => deleteBook(fullBook.id)
+    );
+  });
+
+  // ── Details tab handlers ──────────────────────────────────────────────────────
   backdrop.querySelector('#info-modal-reset-progress')?.addEventListener('click', async (e) => {
     const btn = e.currentTarget;
     btn.disabled = true;
@@ -585,24 +641,17 @@ async function openInfoModal(book) {
         method: 'PUT',
         body: JSON.stringify({ cfi_position: '', percentage: 0, device: 'web' }),
       });
-      // Update the in-memory book object and re-render the library (removes it from "Currently Reading")
       const cached = books.find(b => b.id === fullBook.id);
       if (cached) { cached.percentage = 0; cached.cfi_position = ''; }
       applyFilter();
-      // Refresh the card's progress bar inline (applyFilter re-renders, but keep for instant feedback)
       const card = document.querySelector(`.book-card[data-id="${fullBook.id}"]`);
       if (card) {
         card.querySelector('.book-progress-fill').style.width = '0%';
         card.querySelector('.book-progress-text').textContent = t('library.not_started');
       }
-      // Hide the entire progress section in the modal (progress is now 0)
-      backdrop.querySelectorAll('.info-modal-section-title, .info-modal-progress-row').forEach(el => {
-        if (el.classList.contains('info-modal-progress-row') ||
-            (el.classList.contains('info-modal-section-title') && el.nextElementSibling?.classList.contains('info-modal-progress-row'))) {
-          el.remove();
-        }
-      });
-      toast.success(t('library.toast_progress_reset') || 'Reading progress reset to 0%');
+      backdrop.querySelector('.info-modal-progress-row')?.previousElementSibling?.remove();
+      backdrop.querySelector('.info-modal-progress-row')?.remove();
+      toast.success(t('library.toast_progress_reset'));
     } catch (err) {
       toast.error(t('common.err_prefix') + err.message);
     } finally {
@@ -610,15 +659,8 @@ async function openInfoModal(book) {
     }
   });
 
-  backdrop.querySelector('#info-modal-delete').addEventListener('click', () => {
-    close();
-    confirmDialog(
-      `${t('library.confirm_del_book', { title: escHtml(fullBook.title) })}`,
-      () => deleteBook(fullBook.id)
-    );
-  });
-
-  backdrop.querySelector('#info-modal-save').addEventListener('click', async () => {
+  // ── Shelves tab handler ───────────────────────────────────────────────────────
+  backdrop.querySelector('#info-modal-save')?.addEventListener('click', async () => {
     const checked  = new Set([...backdrop.querySelectorAll('.shelf-chk:checked')].map(el => Number(el.value)));
     const toAdd    = [...checked].filter(id => !bookShelfIds.has(id));
     const toRemove = [...bookShelfIds].filter(id => !checked.has(id));
@@ -633,6 +675,217 @@ async function openInfoModal(book) {
       await refreshShelfFilter();
     } catch (err) { toast.error(t('common.err_prefix') + err.message); }
   });
+
+  // ── KOSync tab handlers ───────────────────────────────────────────────────────
+  if (!isOfflineMode) {
+    const ikInput   = backdrop.querySelector('#ik-input');
+    const ikError   = backdrop.querySelector('#ik-error');
+    const ikSave    = backdrop.querySelector('#ik-save');
+    const ikClear   = backdrop.querySelector('#ik-clear');
+    const ikServer  = backdrop.querySelector('#ik-server');
+    const ikQ       = backdrop.querySelector('#ik-q');
+    const ikSearch  = backdrop.querySelector('#ik-search');
+    const ikResults = backdrop.querySelector('#ik-results');
+
+    const ikValidate  = (val) => /^[0-9a-fA-F]{32}$/.test(val.trim());
+    const ikShowError = (msg) => { ikError.textContent = msg; ikError.style.display = msg ? '' : 'none'; };
+
+    let serversLoaded = false;
+    const ikLoadServers = async () => {
+      if (serversLoaded) return; serversLoaded = true;
+      try {
+        const servers = await apiFetch('/opds/servers');
+        ikServer.innerHTML = servers?.length
+          ? servers.map((s, i) => `<option value="${i}">${escHtml(s.name || s.url)}</option>`).join('')
+          : `<option value="">${t('library.kosync_no_servers')}</option>`;
+      } catch { ikServer.innerHTML = `<option value="">${t('library.kosync_no_servers')}</option>`; }
+    };
+
+    backdrop.querySelectorAll('.imt-tab[data-tab="kosync"]').forEach(b => b.addEventListener('click', ikLoadServers));
+
+    ikInput?.addEventListener('input', () => {
+      const v = ikInput.value.trim();
+      if (v && !ikValidate(v)) ikShowError(t('library.kosync_invalid_md5'));
+      else ikShowError('');
+    });
+
+    ikSave?.addEventListener('click', async () => {
+      const v = ikInput.value.trim().toLowerCase();
+      if (!ikValidate(v)) { ikShowError(t('library.kosync_invalid_md5')); return; }
+      ikShowError('');
+      setButtonLoading(ikSave, true);
+      try {
+        await apiFetch(`/books/${fullBook.id}`, { method: 'PATCH', body: JSON.stringify({ kosync_hash: v }) });
+        fullBook.kosync_hash = v;
+        backdrop.querySelector('#ik-override-val').textContent = v;
+        backdrop.querySelector('#ik-override-row').style.display = '';
+        ikClear.style.display = '';
+        toast.success(t('library.kosync_saved'));
+      } catch (err) { toast.error(t('common.err_prefix') + err.message); }
+      finally { setButtonLoading(ikSave, false, t('library.kosync_save')); }
+    });
+
+    ikClear?.addEventListener('click', async () => {
+      setButtonLoading(ikClear, true);
+      try {
+        await apiFetch(`/books/${fullBook.id}`, { method: 'PATCH', body: JSON.stringify({ kosync_hash: '' }) });
+        fullBook.kosync_hash = '';
+        backdrop.querySelector('#ik-override-row').style.display = 'none';
+        ikClear.style.display = 'none';
+        ikInput.value = fullBook.file_hash_md5 || '';
+        toast.success(t('library.kosync_cleared'));
+      } catch (err) { toast.error(t('common.err_prefix') + err.message); }
+      finally { setButtonLoading(ikClear, false, t('library.kosync_clear')); }
+    });
+
+    const ikDoSearch = async () => {
+      const serverId = ikServer.value;
+      const q = ikQ.value.trim();
+      if (!q || serverId === '') return;
+      setButtonLoading(ikSearch, true);
+      ikResults.innerHTML = '';
+      try {
+        const feed    = await apiFetch(`/opds/search/${encodeURIComponent(serverId)}?q=${encodeURIComponent(q)}`);
+        const entries = feed?.entries || [];
+        if (!entries.length) {
+          ikResults.innerHTML = `<div class="info-modal-kosync-no-results">${t('library.kosync_no_results')}</div>`;
+        } else {
+          ikResults.innerHTML = entries.map(e => `
+            <div class="info-modal-kosync-result">
+              ${e.cover ? `<img class="info-modal-kosync-result-cover" src="${escHtml(e.cover)}" alt="" loading="lazy" />` : '<div class="info-modal-kosync-result-cover" style="background:var(--color-surface2)"></div>'}
+              <div class="info-modal-kosync-result-meta">
+                <div class="info-modal-kosync-result-title">${escHtml(e.title || '?')}</div>
+                <div class="info-modal-kosync-result-author">${escHtml(e.author || '')}</div>
+              </div>
+              ${e.acqHref ? `<button class="btn btn-primary btn-sm ik-replace-btn" data-href="${escHtml(e.acqHref)}">${t('library.kosync_replace_btn')}</button>` : ''}
+            </div>`).join('');
+        }
+      } catch (err) {
+        ikResults.innerHTML = `<div class="info-modal-kosync-no-results">${t('common.err_prefix')}${err.message}</div>`;
+      }
+      setButtonLoading(ikSearch, false, t('library.kosync_search'));
+    };
+
+    ikSearch?.addEventListener('click', ikDoSearch);
+    ikQ?.addEventListener('keydown', e => { if (e.key === 'Enter') ikDoSearch(); });
+
+    ikResults?.addEventListener('click', async e => {
+      const btn = e.target.closest('.ik-replace-btn');
+      if (!btn) return;
+      const href = btn.dataset.href;
+      if (!href) return;
+      setButtonLoading(btn, true);
+      try {
+        const result = await apiFetch(`/books/${fullBook.id}/file`, {
+          method: 'PATCH',
+          body: JSON.stringify({ href, serverId: Number(ikServer.value) }),
+        });
+        fullBook.file_hash_md5 = result.file_hash_md5;
+        fullBook.kosync_hash   = '';
+        backdrop.querySelector('#ik-md5').textContent = result.file_hash_md5;
+        backdrop.querySelector('#ik-override-row').style.display = 'none';
+        ikClear.style.display = 'none';
+        ikInput.value = result.file_hash_md5;
+        if (navigator.serviceWorker?.controller) {
+          navigator.serviceWorker.controller.postMessage({ type: 'DELETE_BOOK', bookId: fullBook.id });
+        }
+        toast.success(t('library.kosync_replace_done', { md5: result.file_hash_md5 }));
+        setButtonLoading(btn, false, '✓');
+      } catch (err) {
+        toast.error(t('common.err_prefix') + err.message);
+        setButtonLoading(btn, false, t('library.kosync_replace_btn'));
+      }
+    });
+  }
+
+  // ── Reading tab — lazy load ───────────────────────────────────────────────────
+  async function loadReadingTab() {
+    const inner = backdrop.querySelector('#imt-reading-inner');
+    try {
+      const [sessions, bookmarks, annotations] = await Promise.all([
+        apiFetch(`/stats/sessions/${fullBook.id}`).catch(() => []),
+        apiFetch(`/bookmarks/${fullBook.id}`).catch(() => []),
+        apiFetch(`/annotations/${fullBook.id}`).catch(() => []),
+      ]);
+
+      const totalSecs = sessions.reduce((s, r) => s + ((r.end_ts || 0) - (r.start_ts || 0)), 0);
+
+      inner.innerHTML = `
+        <div class="imt-section-title">${t('library.reading_bookmarks')}</div>
+        <div id="imt-bm-list">
+        ${bookmarks.length
+          ? bookmarks.map(bm => {
+              const label = (bm.label || '—').replace(/\s*·\s*\d+(\.\d+)?%\s*$/, '').trim() || '—';
+              return `
+            <div class="imt-reading-row" data-bm="${bm.id}">
+              <span class="imt-reading-pct">${Math.round(bm.pct * 100)}%</span>
+              <span class="imt-reading-text">${escHtml(label)}</span>
+              <a class="btn btn-secondary btn-xs imt-jump-btn"
+                href="/readerv4.html?id=${fullBook.id}&peek=1&jumpcfi=${encodeURIComponent(bm.cfi)}"
+                title="${t('library.btn_jump')}">${t('library.btn_jump')}</a>
+              <button class="imt-del-btn" data-type="bookmarks" data-id="${bm.id}" title="${t('common.delete')}">×</button>
+            </div>`;}).join('')
+          : `<div class="imt-empty">${t('library.reading_no_bookmarks')}</div>`}
+        </div>
+
+        <div class="imt-section-title" style="margin-top:.75rem">${t('library.reading_highlights')}</div>
+        <div id="imt-ann-list">
+        ${annotations.length
+          ? annotations.map(a => `
+            <div class="imt-reading-row" data-ann="${a.id}">
+              <span class="imt-reading-pct">${Math.round(a.pct * 100)}%</span>
+              <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${{ yellow: '#f5c518', green: '#4caf50', blue: '#2196f3', pink: '#e91e63' }[a.color] || '#f5c518'};flex-shrink:0"></span>
+              <span class="imt-reading-text">${escHtml(a.text || '')}${a.note ? `<em class="imt-reading-note"> — ${escHtml(a.note)}</em>` : ''}</span>
+              <a class="btn btn-secondary btn-xs imt-jump-btn"
+                href="/readerv4.html?id=${fullBook.id}&peek=1&jumpcfi=${encodeURIComponent(a.cfi)}"
+                title="${t('library.btn_jump')}">${t('library.btn_jump')}</a>
+              <button class="imt-del-btn" data-type="annotations" data-id="${a.id}" title="${t('common.delete')}">×</button>
+            </div>`).join('')
+          : `<div class="imt-empty">${t('library.reading_no_highlights')}</div>`}
+        </div>
+
+        <div class="imt-section-title" style="margin-top:.75rem">${t('library.reading_sessions')}</div>
+        ${sessions.length ? `
+          <div class="imt-reading-summary">${t('library.reading_total_time')}: <strong>${fmtTime(totalSecs)}</strong> &nbsp;&middot;&nbsp; ${sessions.length} ${t('library.reading_sessions').toLowerCase()}</div>
+          <div class="imt-session-list">
+            <div class="imt-session-header">
+              <span>${t('library.session_col_date')}</span>
+              <span>${t('library.session_col_dur')}</span>
+              <span>${t('library.session_col_pages')}</span>
+            </div>
+            ${sessions.map(r => `
+              <div class="imt-session-row">
+                <span class="imt-session-date">${fmtDate(r.start_ts)}</span>
+                <span class="imt-session-dur">${fmtTime((r.end_ts || r.start_ts) - r.start_ts)}</span>
+                <span class="imt-session-pages">${r.pages_nav ? `${r.pages_nav} ${t('library.session_pages_abbr')}` : '—'}</span>
+              </div>`).join('')}
+          </div>`
+          : `<div class="imt-empty">${t('library.reading_no_sessions')}</div>`}`;
+
+      inner.addEventListener('click', async e => {
+        const btn = e.target.closest('.imt-del-btn');
+        if (!btn) return;
+        const { type, id } = btn.dataset;
+        btn.disabled = true;
+        try {
+          await apiFetch(`/${type}/${fullBook.id}/${id}`, { method: 'DELETE' });
+          const row  = btn.closest('.imt-reading-row');
+          const list = row.parentElement;
+          row.remove();
+          if (!list.querySelector('.imt-reading-row')) {
+            const key = type === 'bookmarks' ? 'library.reading_no_bookmarks' : 'library.reading_no_highlights';
+            list.innerHTML = `<div class="imt-empty">${t(key)}</div>`;
+          }
+        } catch (err) {
+          toast.error(t('common.err_prefix') + err.message);
+          btn.disabled = false;
+        }
+      });
+
+    } catch (err) {
+      inner.innerHTML = `<div class="imt-empty">${t('common.err_prefix')}${err.message}</div>`;
+    }
+  }
 }
 
 // ── Shelf selection ───────────────────────────────────────────────────────────
@@ -1222,6 +1475,25 @@ export async function initLibrary() {
     if (sortBeforeSeriesFilter === null)
       localStorage.setItem('library-sort', document.getElementById('sort-select').value);
     applyFilter();
+  });
+
+  // Grid density
+  let gridDensity = localStorage.getItem('br_grid_density') || 'normal';
+  function applyGridDensity() {
+    const grid = document.getElementById('book-grid');
+    if (!grid) return;
+    grid.classList.remove('density-compact', 'density-normal', 'density-large');
+    grid.classList.add('density-' + gridDensity);
+    document.querySelectorAll('.density-btn').forEach(b =>
+      b.classList.toggle('active', b.dataset.density === gridDensity));
+  }
+  applyGridDensity();
+  document.querySelectorAll('.density-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      gridDensity = btn.dataset.density;
+      localStorage.setItem('br_grid_density', gridDensity);
+      applyGridDensity();
+    });
   });
 
   // Edit mode

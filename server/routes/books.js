@@ -177,6 +177,70 @@ router.patch('/:id', (req, res) => {
   res.json({ success: true, kosync_hash: h });
 });
 
+// ── PATCH /api/books/:id/file — download epub from OPDS and replace local file ──
+router.patch('/:id/file', async (req, res) => {
+  const { href, serverId } = req.body;
+  if (!href || serverId === undefined) {
+    return res.status(400).json({ error: 'error.missing_fields' });
+  }
+
+  const db   = getDb();
+  const book = db.prepare('SELECT * FROM books WHERE id = ? AND user_id = ?').get(req.params.id, req.user.id);
+  if (!book) return res.status(404).json({ error: 'error.book_not_found' });
+
+  // Retrieve OPDS server credentials from user settings
+  const settingsRow = db.prepare('SELECT opds_servers FROM user_settings WHERE user_id = ?').get(req.user.id);
+  let servers = [];
+  try { servers = JSON.parse(settingsRow?.opds_servers || '[]'); } catch { servers = []; }
+  const idx = parseInt(serverId, 10);
+  const server = (!isNaN(idx) && idx >= 0 && idx < servers.length) ? servers[idx] : null;
+  if (!server) return res.status(400).json({ error: 'error.opds_server_not_found' });
+
+  const headers = { Accept: 'application/epub+zip, */*' };
+  if (server.username) {
+    const creds = Buffer.from(`${server.username}:${server.password || ''}`).toString('base64');
+    headers['Authorization'] = `Basic ${creds}`;
+  }
+
+  const tmpPath = path.join(TMP_DIR, `replace-${Date.now()}-${Math.random().toString(36).slice(2)}.epub`);
+  let fileHandle;
+  try {
+    const r = await fetch(href, { headers, signal: AbortSignal.timeout(120000) });
+    if (!r.ok) return res.status(502).json({ error: `error.opds_download_failed_${r.status}` });
+    const ct = r.headers.get('content-type') || '';
+    if (!ct.includes('epub') && !ct.includes('octet-stream')) {
+      return res.status(502).json({ error: 'error.opds_not_epub' });
+    }
+
+    // Stream to temp file
+    fileHandle = fs.createWriteStream(tmpPath);
+    const reader = r.body.getReader();
+    await new Promise((resolve, reject) => {
+      fileHandle.on('error', reject);
+      const pump = () => reader.read().then(({ done, value }) => {
+        if (done) { fileHandle.end(); return; }
+        if (!fileHandle.write(value)) fileHandle.once('drain', pump);
+        else pump();
+      }).catch(reject);
+      fileHandle.once('finish', resolve);
+      pump();
+    });
+
+    const newMd5 = computeFileMd5(tmpPath);
+    const destDir = path.join(BOOKS_DIR, String(req.user.id));
+    if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
+    const destPath = path.join(destDir, book.file_hash + '.epub');
+    fs.renameSync(tmpPath, destPath);
+
+    db.prepare('UPDATE books SET file_hash_md5 = ?, kosync_hash = ? WHERE id = ?').run(newMd5, '', book.id);
+    res.json({ file_hash_md5: newMd5 });
+  } catch (err) {
+    try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
+    console.error('[books] replace file error:', err.message);
+    res.status(500).json({ error: 'error.book_replace_failed' });
+  }
+});
+
 // ── POST /api/books/reextract-all — re-extract metadata for all books
 router.post('/reextract-all', (req, res) => {
   const db    = getDb();

@@ -1,6 +1,10 @@
 // Service worker registration — network-first updates, reload when a new version activates.
 (function () {
   if (!('serviceWorker' in navigator)) return;
+  // Chrome 83 WebView (inkPalmPlus/zxh_wv_te): when a SW controls the page, any
+  // same-origin fetch() that the SW handles with return-without-respondWith hangs
+  // forever. Skip SW registration entirely on this WebView so all requests go native.
+  if (/Chrome\/8[0-3].*\bwv\b/.test(navigator.userAgent)) return;
 
   let reloading = false;
 
