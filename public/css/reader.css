@@ -1445,6 +1445,21 @@ input[type="range"]::-moz-range-thumb {
   color: #fff;
 }
 
+/* E-ink reader: settings tab icons — convert emoji to grayscale */
+[data-reader-eink] .settings-tab-icon {
+  filter: grayscale(1);
+}
+
+/* E-ink reader: theme selection buttons — disabled (theme irrelevant in e-ink) */
+[data-reader-eink] .theme-btn {
+  background: #e8e8e8 !important;
+  color: #888 !important;
+  border-color: #bbb !important;
+  pointer-events: none;
+  cursor: not-allowed;
+  opacity: .6;
+}
+
 /* E-ink reader: annotation toolbar action buttons */
 [data-reader-eink] #annot-toolbar .btn-icon-sm {
   background: #fff;

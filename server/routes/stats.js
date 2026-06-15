@@ -89,6 +89,18 @@ router.get('/', (req, res) => {
   });
 });
 
+// GET /api/stats/sessions/:bookId — per-book reading sessions (newest first, max 50)
+router.get('/sessions/:bookId', (req, res) => {
+  const db   = getDb();
+  const rows = db.prepare(`
+    SELECT start_ts, end_ts, pages_nav
+    FROM reading_sessions
+    WHERE user_id = ? AND book_id = ? AND end_ts IS NOT NULL
+    ORDER BY start_ts DESC LIMIT 50
+  `).all(req.user.id, req.params.bookId);
+  res.json(rows);
+});
+
 // GET /api/stats/history — chapter visit history grouped by book (last 50 visits per book)
 router.get('/history', (req, res) => {
   const db  = getDb();

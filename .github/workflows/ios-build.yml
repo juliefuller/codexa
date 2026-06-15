@@ -8,6 +8,11 @@ on:
   #     - 'iOS/**'
   #     - '.github/workflows/ios-build.yml'
   workflow_dispatch:
+    inputs:
+      server_url:
+        description: 'Codexa server URL override (leave blank to use SERVER_URL secret)'
+        required: false
+        default: ''
 
 jobs:
   build:
@@ -41,11 +46,28 @@ jobs:
           working-directory: iOS
 
       # ── Capacitor: generate & sync iOS project ────────────────────────────────
-      - name: Inject bundle ID into Capacitor config
+      - name: Inject configuration
         env:
           BUNDLE_ID: ${{ secrets.BUNDLE_ID }}
+          SERVER_URL_SECRET: ${{ secrets.SERVER_URL }}
         run: |
           sed -i '' "s/REPLACE_WITH_YOUR_BUNDLE_ID/$BUNDLE_ID/" capacitor.config.json
+          SERVER_URL="${{ github.event.inputs.server_url }}"
+          if [ -z "$SERVER_URL" ]; then SERVER_URL="$SERVER_URL_SECRET"; fi
+          if [ -n "$SERVER_URL" ]; then
+            python3 -c "
+import json, sys
+url = sys.argv[1]
+with open('capacitor.config.json') as f:
+    cfg = json.load(f)
+cfg.setdefault('server', {})['url'] = url
+with open('capacitor.config.json', 'w') as f:
+    json.dump(cfg, f, indent=2)
+print('Server URL:', url)
+" "$SERVER_URL"
+          else
+            echo "No server URL configured — app will show the setup screen"
+          fi
 
       - name: Generate iOS project
         run: npx cap add ios
@@ -88,29 +110,68 @@ jobs:
           }
           JSONEOF
 
-      - name: Patch AppDelegate — keep screen always on
+      - name: Patch MainViewController — keep screen on, volume key navigation
         run: |
-          python3 - <<'PYEOF'
-          import re, sys
+          cat > ios/App/App/MainViewController.swift << 'SWEOF'
+          import UIKit
+          import Capacitor
+          import MediaPlayer
+          import AVFoundation
 
-          path = 'ios/App/App/AppDelegate.swift'
-          code = open(path).read()
+          class MainViewController: CAPBridgeViewController {
+              private var volumeView: MPVolumeView!
+              private var lastVolume: Float = 0.5
 
-          # Insert isIdleTimerDisabled immediately after the opening { of
-          # didFinishLaunchingWithOptions, before any existing code.
-          patched = re.sub(
-            r'(func application\(_ application: UIApplication,\s*'
-            r'didFinishLaunchingWithOptions[^\{]+\{)',
-            r'\1\n        UIApplication.shared.isIdleTimerDisabled = true',
-            code
-          )
+              override func viewDidLoad() {
+                  super.viewDidLoad()
+                  UIApplication.shared.isIdleTimerDisabled = true
+                  volumeView = MPVolumeView(frame: CGRect(x: -100, y: -100, width: 1, height: 1))
+                  view.addSubview(volumeView)
+                  let audioSession = AVAudioSession.sharedInstance()
+                  try? audioSession.setCategory(.ambient, mode: .default, options: [])
+                  try? audioSession.setActive(true)
+                  setSystemVolume(0.5)
+                  lastVolume = 0.5
+                  NotificationCenter.default.addObserver(
+                      self,
+                      selector: #selector(volumeChanged(_:)),
+                      name: NSNotification.Name(rawValue: "AVSystemController_SystemVolumeDidChangeNotification"),
+                      object: nil
+                  )
+              }
 
-          if patched == code:
-            print("WARNING: AppDelegate pattern not found — keep-awake patch skipped")
-          else:
-            open(path, 'w').write(patched)
-            print("AppDelegate patched successfully")
-          PYEOF
+              @objc func volumeChanged(_ notification: NSNotification) {
+                  guard let userInfo = notification.userInfo,
+                        let newVolume = userInfo["AVSystemController_AudioVolumeNotificationParameter"] as? Float
+                  else { return }
+                  if newVolume > lastVolume || newVolume == 1.0 {
+                      self.webView?.evaluateJavaScript(
+                          "window.dispatchEvent(new CustomEvent('volumeUp'));",
+                          completionHandler: nil
+                      )
+                  } else if newVolume < lastVolume || newVolume == 0.0 {
+                      self.webView?.evaluateJavaScript(
+                          "window.dispatchEvent(new CustomEvent('volumeDown'));",
+                          completionHandler: nil
+                      )
+                  }
+                  DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                      self.setSystemVolume(0.5)
+                      self.lastVolume = 0.5
+                  }
+              }
+
+              private func setSystemVolume(_ value: Float) {
+                  if let slider = volumeView.subviews.first(where: { $0 is UISlider }) as? UISlider {
+                      slider.value = value
+                  }
+              }
+
+              deinit {
+                  NotificationCenter.default.removeObserver(self)
+              }
+          }
+          SWEOF
 
       - name: Configure Info.plist — hide status bar, fullscreen
         run: |

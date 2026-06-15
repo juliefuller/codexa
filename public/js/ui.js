@@ -32,6 +32,7 @@ export const toast = {
   success: (msg) => showToast(msg, 'success'),
   error:   (msg) => showToast(msg, 'error'),
   info:    (msg) => showToast(msg, 'info'),
+  warn:    (msg) => showToast(msg, 'warn', 7000),
 };
 
 /**

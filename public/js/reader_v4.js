@@ -4,7 +4,7 @@ import { t, initI18n, applyTranslations, getCurrentLang } from './i18n.js';
 import ePub from './flow/index.js';
 import { isBookDownloaded, downloadBook, fetchOfflineBookFile, getBookMeta, saveBookMeta } from './offline.js';
 
-const READER_BUILD = 'br-v76';
+const READER_BUILD = 'br-v78';
 const _i18nReady = initI18n();
 console.log('[codexa] reader build', READER_BUILD);
 
@@ -340,6 +340,8 @@ let syncDebounceTimer  = null;
 let syncIntervalTimer  = null;
 let lastSyncedCfi      = '';           // CFI at last successful remote push — used to skip duplicate syncs
 let bestKnownRemotePct = 0;            // high-water mark from all sources — kosync is never pushed below this
+let _kosyncPushFailures    = 0;        // consecutive remote push failures for current book
+let _kosyncWarnedThisSession = false;  // only warn once per book load
 
 // ── Status bar state ──────────────────────────────────────────────────────────
 let currentHref      = '';    // current spine href (updated in updateProgress)
@@ -4141,9 +4143,9 @@ function initSettingsUi() {
     prefs.volumeKeysSwapped = e.target.checked;
     persistPrefs();
   });
-  // Show the Android-only section only when running inside the Codexa app
+  // Show the native-app settings section for Android app and iOS Capacitor app
   const androidSection = document.getElementById('android-settings-section');
-  if (androidSection) androidSection.style.display = isAndroidApp() ? '' : 'none';
+  if (androidSection) androidSection.style.display = (isAndroidApp() || isIOSApp()) ? '' : 'none';
   // Show portrait lock section on mobile/PWA/Android (any touch device or installed PWA)
   const portraitSection = document.getElementById('portrait-lock-section');
   if (portraitSection) {
@@ -4486,17 +4488,32 @@ async function fetchInternalProgress(docKey) {
   catch { return null; }
 }
 
-function pushRemoteProgress(docKey, xpointer, pct) {
-  return apiFetch(`/kosync/remote/${encodeURIComponent(docKey)}`, {
-    method: 'PUT',
-    body: JSON.stringify({
-      document:   docKey,
-      progress:   xpointer,
-      percentage: pct,
-      device:     'web',
-      device_id:  'codexa-web',
-    }),
-  }).catch(() => {});
+async function pushRemoteProgress(docKey, xpointer, pct) {
+  try {
+    const r = await apiFetch(`/kosync/remote/${encodeURIComponent(docKey)}`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        document:   docKey,
+        progress:   xpointer,
+        percentage: pct,
+        device:     'web',
+        device_id:  'codexa-web',
+      }),
+    });
+    if (r && !r.pushed) _trackKosyncFailure(r.status || 0);
+    else _kosyncPushFailures = 0;
+  } catch { _kosyncPushFailures = 0; }
+}
+
+function _trackKosyncFailure(status) {
+  _kosyncPushFailures++;
+  if (_kosyncPushFailures < 2 || _kosyncWarnedThisSession) return;
+  if (status === 0) return; // network offline — not a mismatch
+  _kosyncWarnedThisSession = true;
+  const msgKey = (status === 401 || status === 403)
+    ? 'reader.kosync_warn_auth'
+    : 'reader.kosync_warn_mismatch';
+  toast.warn(t(msgKey));
 }
 
 function pushInternalProgress(docKey, xpointer, pct, force = false) {
@@ -5203,9 +5220,15 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-// ── Android app detection ─────────────────────────────────────────────────────
+// ── App detection ─────────────────────────────────────────────────────────────
 function isAndroidApp() {
   return navigator.userAgent.includes('CodexaApp');
+}
+
+// Running inside a Capacitor-wrapped WKWebView (iOS native app).
+// window.Capacitor is injected by the Capacitor bridge into every page the WKWebView loads.
+function isIOSApp() {
+  return !!(window.Capacitor?.isNativePlatform?.() && window.Capacitor?.getPlatform?.() === 'ios');
 }
 
 // Enable/disable hardware volume-key page navigation via the Android JS bridge.
@@ -5224,6 +5247,18 @@ function applyVolumeKeyMode(enabled) {
     window.AndroidCodexa.setVolumeKeyMode(enabled);
   }
 }
+
+// iOS volume key events dispatched by native MainViewController via evaluateJavaScript.
+// Always attached; the pref check happens at event time so toggling the setting
+// takes effect without reloading the page.
+window.addEventListener('volumeUp', () => {
+  if (!isReady || !prefs.volumeKeysEnabled) return;
+  if (prefs.volumeKeysSwapped) goPrev(); else goNext();
+});
+window.addEventListener('volumeDown', () => {
+  if (!isReady || !prefs.volumeKeysEnabled) return;
+  if (prefs.volumeKeysSwapped) goNext(); else goPrev();
+});
 
 // Lock/unlock device orientation to portrait.
 // Works on Android app (via JS bridge) and PWA (via Screen Orientation API).
@@ -6510,6 +6545,15 @@ async function init() {
     console.log('[pos] isReady=true, currentCfi:', currentCfi.slice(0,60));
     openCfi = currentCfi;      // snapshot position-on-open for change detection
     lastSyncedCfi = currentCfi; // server already knows this position — no immediate remote push needed
+    _kosyncPushFailures    = 0;
+    _kosyncWarnedThisSession = false;
+    // Jump to a specific CFI if provided via ?jumpcfi= URL param (bookmarks/annotations deep-link)
+    const _jumpCfi = params.get('jumpcfi');
+    if (_jumpCfi) {
+      try { await rendition.display(decodeURIComponent(_jumpCfi)); } catch { /* invalid CFI — stay at current pos */ }
+    }
+    // Peek mode: always notify user that progress is not saved
+    if (isPeekMode) toast.info(t('reader.peek_mode_hint'));
     cancelDebouncedSync();
     startPeriodicSync();
     void initBattery();
