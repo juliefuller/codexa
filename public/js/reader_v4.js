@@ -5,7 +5,7 @@ import ePub from './flow/index.js';
 import { isBookDownloaded, downloadBook, fetchOfflineBookFile, getBookMeta, saveBookMeta } from './offline.js';
 import { getSyncDevice } from './sync-device.js';
 
-const READER_BUILD = 'br-v96';
+const READER_BUILD = 'br-v97';
 const _i18nReady = initI18n();
 console.log('[codexa] reader build', READER_BUILD);
 
@@ -4716,11 +4716,28 @@ async function seekToPercentage(targetPct) {
 }
 
 // ── External + internal kosync ────────────────────────────────────────────────
-// KOReader identifies books by MD5 of file content — use file_hash_md5 so our
-// entries in Grimmory line up with what KOReader stores there.
+// KOReader / BookOrbit identify books by MD5 of file content — never use Codexa's SHA-1 file_hash.
+async function ensureBookKosyncMeta() {
+  if (!currentBook?.id) return;
+  if (currentBook.kosync_hash || currentBook.file_hash_md5) return;
+  try {
+    const fresh = await apiFetch(`/books/${currentBook.id}`);
+    if (fresh.file_hash_md5) currentBook.file_hash_md5 = fresh.file_hash_md5;
+    if (fresh.kosync_hash) currentBook.kosync_hash = fresh.kosync_hash;
+    saveBookMeta({ ...currentBook, ...fresh }).catch(() => {});
+    console.log('[kosync] loaded file_hash_md5 from server:', currentBook.file_hash_md5);
+  } catch (e) {
+    console.warn('[kosync] could not load file_hash_md5:', e.message);
+  }
+}
+
 function externalDocKey() {
-  // Priority: user-supplied KOReader hash > computed MD5 > SHA-256 fallback
-  return currentBook.kosync_hash || currentBook.file_hash_md5 || currentBook.file_hash;
+  const md5 = currentBook?.kosync_hash || currentBook?.file_hash_md5;
+  if (md5) return md5;
+  const h = currentBook?.file_hash || '';
+  if (h.length === 32) return h;
+  console.warn('[kosync] missing file_hash_md5 — BookOrbit sync will fail for', currentBook?.title);
+  return h;
 }
 
 // Generate a KOReader-compatible xpointer for the current position.
@@ -4970,6 +4987,7 @@ function scheduleDebouncedSync() {
 async function saveProgress({ forceRemote = false, allowRemote = true, inSession = false, forced = false, forceLocal = false } = {}) {
   if (!currentBook || !isReady) return;
   if (isPeekMode) return;
+  await ensureBookKosyncMeta();
   const cfi = currentCfi || '';
   const pct = currentPct > 0 ? currentPct : lastKnownGoodPct;
   if (!cfi && pct === 0) return;
@@ -6611,6 +6629,7 @@ async function init() {
     document.title = `${currentBook.title} — Codexa`;
     loadBookPrefs(currentBook.id);
     syncSettingsUi();
+    await ensureBookKosyncMeta();
   } catch (err) {
     console.error('[reader] book metadata failed:', err?.message);
     const msg = t('reader.err_no_book');

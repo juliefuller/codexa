@@ -42,6 +42,8 @@ export async function saveBookMeta(book) {
       author:         book.author         || '',
       cover_path:     book.cover_path     || null,
       file_hash:      book.file_hash      || '',
+      file_hash_md5:  book.file_hash_md5  || '',
+      kosync_hash:    book.kosync_hash    || '',
       percentage:     book.percentage     || 0,
       file_size:      book.file_size      || 0,
       cachedAt:       Date.now(),
