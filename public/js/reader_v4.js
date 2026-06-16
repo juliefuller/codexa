@@ -5,7 +5,7 @@ import ePub from './flow/index.js';
 import { isBookDownloaded, downloadBook, fetchOfflineBookFile, getBookMeta, saveBookMeta } from './offline.js';
 import { getSyncDevice } from './sync-device.js';
 
-const READER_BUILD = 'br-v97';
+const READER_BUILD = 'br-v98';
 const _i18nReady = initI18n();
 console.log('[codexa] reader build', READER_BUILD);
 
@@ -4719,16 +4719,20 @@ async function seekToPercentage(targetPct) {
 // KOReader / BookOrbit identify books by MD5 of file content — never use Codexa's SHA-1 file_hash.
 async function ensureBookKosyncMeta() {
   if (!currentBook?.id) return;
-  if (currentBook.kosync_hash || currentBook.file_hash_md5) return;
-  try {
-    const fresh = await apiFetch(`/books/${currentBook.id}`);
-    if (fresh.file_hash_md5) currentBook.file_hash_md5 = fresh.file_hash_md5;
-    if (fresh.kosync_hash) currentBook.kosync_hash = fresh.kosync_hash;
-    saveBookMeta({ ...currentBook, ...fresh }).catch(() => {});
-    console.log('[kosync] loaded file_hash_md5 from server:', currentBook.file_hash_md5);
-  } catch (e) {
-    console.warn('[kosync] could not load file_hash_md5:', e.message);
+  if (!currentBook.kosync_hash && !currentBook.file_hash_md5) {
+    try {
+      const fresh = await apiFetch(`/books/${currentBook.id}`);
+      if (fresh.file_hash_md5) currentBook.file_hash_md5 = fresh.file_hash_md5;
+      if (fresh.kosync_hash) currentBook.kosync_hash = fresh.kosync_hash;
+      saveBookMeta({ ...currentBook, ...fresh }).catch(() => {});
+      console.log('[kosync] loaded file_hash_md5 from server:', currentBook.file_hash_md5);
+    } catch (e) {
+      console.warn('[kosync] could not load file_hash_md5:', e.message);
+    }
   }
+  const md5 = currentBook.kosync_hash || currentBook.file_hash_md5;
+  const legacy = currentBook.file_hash;
+  if (legacy && md5 && legacy !== md5) migrateBookStatsStorage(legacy, md5);
 }
 
 function externalDocKey() {
@@ -4801,6 +4805,28 @@ function pushInternalProgress(docKey, xpointer, pct, force = false) {
 
 function bookStatsStorageKey(hash, field) {
   return `br_bo_stats_${field}_${hash || ''}`;
+}
+
+function migrateBookStatsStorage(fromHash, toHash) {
+  if (!fromHash || !toHash || fromHash === toHash) return false;
+  let migrated = false;
+  for (const field of ['secs', 'pages']) {
+    const fromVal = loadBookStatsTotal(fromHash, field);
+    if (fromVal <= 0) continue;
+    const toVal = loadBookStatsTotal(toHash, field);
+    const merged = Math.max(fromVal, toVal);
+    if (merged > toVal) {
+      saveBookStatsTotal(toHash, field, merged);
+      migrated = true;
+    }
+    try { localStorage.removeItem(bookStatsStorageKey(fromHash, field)); } catch { /* ignore */ }
+  }
+  if (migrated) console.log('[stats] migrated BookOrbit totals from legacy hash to MD5');
+  return migrated;
+}
+
+function statsRemoteAccepted(res) {
+  return !!(res?.pushed && (res.processed > 0 || (res.unmatched === 0 && res.processed !== 0)));
 }
 
 function loadBookStatsTotal(hash, field) {
@@ -5029,7 +5055,7 @@ async function saveProgress({ forceRemote = false, allowRemote = true, inSession
   const statsPayload = kosyncStatsEnabled && (inSession || forceRemote) ? buildBookOrbitStatsPayload() : null;
   if (statsPayload) {
     saves.push(pushRemoteStats(statsPayload).then((res) => {
-      if (res?.pushed) {
+      if (statsRemoteAccepted(res)) {
         commitBookOrbitStats(statsPayload);
         markRemoteSynced();
       }
@@ -5075,7 +5101,7 @@ function saveProgressBackground({ inSession = false } = {}) {
       const statsPayload = buildBookOrbitStatsPayload();
       if (statsPayload) {
         pushRemoteStatsBackground(statsPayload).then((res) => {
-          if (res?.pushed) commitBookOrbitStats(statsPayload);
+          if (statsRemoteAccepted(res)) commitBookOrbitStats(statsPayload);
         });
       }
     }
