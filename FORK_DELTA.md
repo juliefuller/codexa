@@ -3,7 +3,7 @@
 Maintained list of changes in this fork that are **not** in upstream. Use during every upstream merge: take upstream first, then re-apply or verify each item.
 
 **Last upstream merge base:** v2.3.3 (`17b47ae`, merged 2026-06-15)  
-**Reader build (fork):** `br-v95`
+**Reader build (fork):** `br-v96`
 
 ---
 

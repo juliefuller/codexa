@@ -5,7 +5,7 @@ import ePub from './flow/index.js';
 import { isBookDownloaded, downloadBook, fetchOfflineBookFile, getBookMeta, saveBookMeta } from './offline.js';
 import { getSyncDevice } from './sync-device.js';
 
-const READER_BUILD = 'br-v95';
+const READER_BUILD = 'br-v96';
 const _i18nReady = initI18n();
 console.log('[codexa] reader build', READER_BUILD);
 
@@ -1327,19 +1327,48 @@ function applyPageShadow() {
   }
 }
 
-// ── FIX: Forward iframe keydown events to host ────────────────────────────────
-const IFRAME_NAV_KEYS = new Set(['ArrowRight', 'ArrowLeft', ' ', 'PageDown', 'PageUp']);
+// ── Keyboard / hardware button navigation ─────────────────────────────────────
+let _lastNavKeyTs = 0;
+const NAV_KEY_DEBOUNCE_MS = 150;
 
+function navDirectionFromKeyEvent(e) {
+  const key = e.key;
+  if (key === 'ArrowLeft' || key === 'PageUp' || key === 'ArrowUp') return 'prev';
+  if (key === 'ArrowRight' || key === 'PageDown' || key === 'ArrowDown' || key === ' ') return 'next';
+  const code = e.keyCode || e.which;
+  if (code === 33 || code === 38) return 'prev';  // PageUp, ArrowUp
+  if (code === 34 || code === 40 || code === 32) return 'next'; // PageDown, ArrowDown, Space
+  if (code === 37) return 'prev';
+  if (code === 39) return 'next';
+  return null;
+}
+
+function handleReaderNavKey(e) {
+  const dir = navDirectionFromKeyEvent(e);
+  if (!dir) return false;
+  const tag = document.activeElement?.tagName;
+  if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return false;
+  if (e.ctrlKey || e.metaKey || e.altKey) return false;
+  const now = Date.now();
+  if (now - _lastNavKeyTs < NAV_KEY_DEBOUNCE_MS) {
+    e.preventDefault();
+    return true;
+  }
+  _lastNavKeyTs = now;
+  e.preventDefault();
+  if (dir === 'prev') goPrev();
+  else goNext();
+  return true;
+}
+
+// ── Forward iframe keydown events to host ─────────────────────────────────────
 function attachIframeKeyboard(contents) {
   if (!contents?.window) return;
   // Capture phase + preventDefault stops epub.js from also turning the page when we
   // handle navigation keys here (avoids double page-turn on e-ink Page Up/Down).
   contents.window.addEventListener('keydown', (e) => {
-    if (IFRAME_NAV_KEYS.has(e.key)) {
-      e.preventDefault();
+    if (handleReaderNavKey(e)) {
       e.stopImmediatePropagation();
-      if (e.key === 'ArrowLeft' || e.key === 'PageUp') goPrev();
-      else goNext();
       return;
     }
     document.dispatchEvent(new KeyboardEvent('keydown', { key: e.key, bubbles: true }));
@@ -5568,14 +5597,7 @@ document.addEventListener('keydown', (e) => {
   const tag = document.activeElement?.tagName;
   if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
   if (e.ctrlKey || e.metaKey || e.altKey) return;
-  switch (e.key) {
-    case 'ArrowRight': case ' ': case 'PageDown':
-      e.preventDefault(); goNext(); break;
-    case 'ArrowLeft': case 'PageUp':
-      e.preventDefault(); goPrev(); break;
-    default:
-      break;
-  }
+  if (handleReaderNavKey(e)) return;
   switch (key) {
     case 'k':
       e.preventDefault();
@@ -5597,6 +5619,12 @@ document.addEventListener('keydown', (e) => {
       break;
   }
 });
+
+// Capture on window for PocketBook / e-ink browsers that don't deliver nav keys to document.
+window.addEventListener('keydown', (e) => {
+  if (String(e.key || '').toLowerCase() === 'escape') return;
+  handleReaderNavKey(e);
+}, true);
 
 // ── App detection ─────────────────────────────────────────────────────────────
 function isAndroidApp() {

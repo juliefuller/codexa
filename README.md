@@ -5,7 +5,7 @@ This repository is a personal fork of **[Codexa](https://github.com/thehijacker/
 For the full project overview, screenshots, feature list, KOReader setup, OPDS, dictionary lookup, keyboard shortcuts, and self-hosting guide, see the **[upstream README](https://github.com/thehijacker/codexa/blob/main/README.md)**.
 
 **Upstream base:** [thehijacker/codexa](https://github.com/thehijacker/codexa) **v2.3.3** (merged June 2026).  
-**Reader build:** `br-v95`
+**Reader build:** `br-v96`
 
 ---
 
